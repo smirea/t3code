@@ -83,8 +83,7 @@ import {
   resolveTimelineMinimapHasPersistentGutter,
   resolveTimelineMinimapCurrentIndex,
   isTimelineMinimapRowVisible,
-  resolveStickyPrompt,
-  resolveStickyPromptOffset,
+  findLastIndex,
   resolveTimelineMinimapVisibleRange,
   resolveTimelineMinimapHitStripWidth,
   timelineTurnFoldRunIdsByEntryId,
@@ -156,6 +155,7 @@ function timelineListStateFor(identity: string): {
   };
 }
 
+const STICKY_PROMPT_GAP_PX = 8;
 const TIMELINE_LIST_HEADER = <div className="h-3 sm:h-4" />;
 const TIMELINE_LIST_FADE_HEADER = (
   <div className="h-[var(--workspace-titlebar-scroll-fade-height)]" />
@@ -845,47 +845,51 @@ const ConversationTimeline = memo(function ConversationTimeline({
     shouldRestorePosition: shouldRestoreVisibleContentPosition,
   };
 
-  const resolveListScroll = (state: LegendListState) => {
+  // Cached row positions exclude the header and pending scroll adjustments.
+  const resolveListScroll = (state: LegendListState, viewport: HTMLElement) => {
     const firstBufferedIndex = state.startBuffered;
     const firstBufferedRow =
       firstBufferedIndex == null ? undefined : state.elementAtIndex(firstBufferedIndex);
     const firstBufferedTop =
       firstBufferedIndex == null ? undefined : state.positionAtIndex(firstBufferedIndex);
-    const viewport: HTMLElement | undefined = listRef.current?.getScrollableNode();
-    // Cached row positions exclude the header and pending scroll adjustments.
-    return firstBufferedRow && viewport && firstBufferedTop !== undefined
+    return firstBufferedRow && firstBufferedTop !== undefined
       ? firstBufferedTop +
           viewport.getBoundingClientRect().top -
           firstBufferedRow.getBoundingClientRect().top
       : state.scroll;
   };
 
-  const floatingPromptLayerRef = useRef<HTMLDivElement | null>(null);
+  const floatingPromptZoneRef = useRef<HTMLDivElement | null>(null);
   // Runs from the scroll event itself so the push-out tracks the next prompt in the same frame.
+  // The list's own visible range lags the scroll event, so rendered prompts are measured directly.
   const syncFloatingPrompt = () => {
     const state = listRef.current?.getState?.();
     const viewport = listRef.current?.getScrollableNode();
-    if (!state || !viewport || restoringThreadPosition || state.data !== rows) return;
-    const scroll = resolveListScroll(state);
-    const viewportTop = viewport.getBoundingClientRect().top;
-    const sticky = resolveStickyPrompt({
-      promptCount: minimapItems.length,
-      promptBottom: (index) => {
-        const row = minimapItems[index]!.rowIndex;
-        const top = state.positionAtIndex(row);
-        const size = state.sizeAtIndex(row);
-        return top === undefined || size === undefined ? undefined : top + size - scroll;
-      },
-      promptTop: (index) => {
-        const row = minimapItems[index]!.rowIndex;
-        const element = state.elementAtIndex(row);
-        const message = element?.querySelector("[data-message-role]") ?? element;
-        if (message) return message.getBoundingClientRect().top - viewportTop;
-        const top = state.positionAtIndex(row);
-        return top === undefined ? undefined : top - scroll;
-      },
-    });
-    const shown = sticky === null ? undefined : minimapItems[sticky.index];
+    const zone = floatingPromptZoneRef.current;
+    if (!state || !viewport || !zone || restoringThreadPosition || state.data !== rows) return;
+    const zoneTop = zone.getBoundingClientRect().top;
+    const line =
+      resolveListScroll(state, viewport) + zoneTop - viewport.getBoundingClientRect().top;
+    const promptEdge = (index: number, edge: "top" | "bottom") => {
+      const row = minimapRowIndices[index]!;
+      const message = state.elementAtIndex(row)?.querySelector("[data-message-role]");
+      if (message) {
+        const rect = message.getBoundingClientRect();
+        return (edge === "top" ? rect.top : rect.bottom) - zoneTop;
+      }
+      const top = state.positionAtIndex(row) - line;
+      return edge === "top" ? top : top + state.sizeAtIndex(row);
+    };
+    const promptIndex = findLastIndex(
+      minimapRowIndices.length,
+      (index) => promptEdge(index, "top") <= 0,
+    );
+    const nextTop =
+      promptIndex + 1 < minimapRowIndices.length ? promptEdge(promptIndex + 1, "top") : Infinity;
+    const shown =
+      promptIndex >= 0 && promptEdge(promptIndex, "bottom") <= 0
+        ? minimapItems[promptIndex]
+        : undefined;
     setFloatingPrompt((current) => {
       if (shown) {
         return current?.visible &&
@@ -896,14 +900,10 @@ const ConversationTimeline = memo(function ConversationTimeline({
       }
       return current?.visible ? { ...current, visible: false } : current;
     });
-    const layer = floatingPromptLayerRef.current;
-    if (layer && sticky !== null) {
-      const offset = resolveStickyPromptOffset({
-        nextPromptTop: sticky.nextPromptTop,
-        layerTop: layer.offsetTop,
-        layerHeight: layer.offsetHeight,
-      });
-      const translate = `0 ${offset}px`;
+    const layer = zone.firstElementChild;
+    if (shown && layer instanceof HTMLElement) {
+      const bubbleBottom = layer.offsetTop + layer.offsetHeight;
+      const translate = `0 ${Math.min(0, nextTop - STICKY_PROMPT_GAP_PX - bubbleBottom)}px`;
       if (layer.style.translate !== translate) layer.style.translate = translate;
     }
   };
@@ -915,7 +915,8 @@ const ConversationTimeline = memo(function ConversationTimeline({
       return;
     }
 
-    const scroll = resolveListScroll(state);
+    const viewport: HTMLElement | undefined = listRef.current?.getScrollableNode();
+    const scroll = viewport ? resolveListScroll(state, viewport) : state.scroll;
     const visibleRange = resolveTimelineMinimapVisibleRange({ ...state, scroll });
     for (const item of minimapItems) {
       const strip = minimapStripMap.get(item.id);
@@ -1435,12 +1436,19 @@ const ConversationTimeline = memo(function ConversationTimeline({
               onWheel={forwardMinimapWheel}
               onSelect={(item) => scrollToRow(item.rowIndex)}
             />
-            {floatingPromptItem ? (
+            {minimapItems.length > 0 ? (
               <FloatingPrompt
-                ref={floatingPromptLayerRef}
-                text={floatingPromptItem.userText}
-                visible={floatingPrompt?.visible === true && !restoringThreadPosition}
-                onSelect={() => scrollToRow(floatingPromptItem.rowIndex)}
+                ref={floatingPromptZoneRef}
+                belowTopFade={topFadeEnabled}
+                text={floatingPromptItem?.userText ?? null}
+                visible={
+                  floatingPromptItem !== undefined &&
+                  floatingPrompt?.visible === true &&
+                  !restoringThreadPosition
+                }
+                onSelect={() => {
+                  if (floatingPromptItem) scrollToRow(floatingPromptItem.rowIndex);
+                }}
               />
             ) : null}
           </TooltipScrollDismissArea>

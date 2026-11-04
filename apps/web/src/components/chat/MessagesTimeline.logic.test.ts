@@ -32,8 +32,6 @@ import {
   resolveAssistantMessageCopyState,
   type MessagesTimelineRow,
   workEntryDisplayLabel,
-  resolveStickyPrompt,
-  resolveStickyPromptOffset,
 } from "./MessagesTimeline.logic";
 
 describe("resolveAssistantMessageCopyState", () => {
@@ -4364,58 +4362,5 @@ describe("shouldCollapseUserMessage", () => {
 
     expect(shouldCollapseUserMessage(`${citation} Can you expand on this?`)).toBe(false);
     expect(shouldCollapseUserMessage(`${citation} ${"More text. ".repeat(60)}`)).toBe(true);
-  });
-});
-
-describe("resolveStickyPrompt", () => {
-  // Viewport-relative [top, bottom] per prompt; negative means above the viewport.
-  const resolve = (prompts: ReadonlyArray<readonly [number, number]>) =>
-    resolveStickyPrompt({
-      promptCount: prompts.length,
-      promptTop: (index) => prompts[index]![0],
-      promptBottom: (index) => prompts[index]![1],
-    });
-
-  it("sticks the last prompt that is fully above the viewport", () => {
-    expect(
-      resolve([
-        [-900, -800],
-        [-300, -200],
-        [400, 500],
-      ]),
-    ).toEqual({ index: 1, nextPromptTop: 400 });
-  });
-
-  it("sticks nothing while the reading turn's prompt is still on screen", () => {
-    expect(
-      resolve([
-        [-900, -800],
-        [-50, 40],
-      ]),
-    ).toBeNull();
-    expect(resolve([[10, 90]])).toBeNull();
-  });
-
-  it("stops sticking once the next prompt reaches the top", () => {
-    expect(
-      resolve([
-        [-900, -800],
-        [-5, 60],
-      ]),
-    ).toBeNull();
-  });
-
-  it("keeps the last prompt stuck when no prompt follows", () => {
-    expect(resolve([[-300, -200]])).toEqual({ index: 0, nextPromptTop: null });
-  });
-});
-
-describe("resolveStickyPromptOffset", () => {
-  it("stays pinned until the next prompt meets its bottom edge, then moves with it", () => {
-    const layer = { layerTop: 8, layerHeight: 60 };
-    expect(resolveStickyPromptOffset({ ...layer, nextPromptTop: null })).toBe(0);
-    expect(resolveStickyPromptOffset({ ...layer, nextPromptTop: 400 })).toBe(0);
-    expect(resolveStickyPromptOffset({ ...layer, nextPromptTop: 76 })).toBe(0);
-    expect(resolveStickyPromptOffset({ ...layer, nextPromptTop: 40 })).toBe(-36);
   });
 });
