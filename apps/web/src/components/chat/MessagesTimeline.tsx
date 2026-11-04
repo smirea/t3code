@@ -1377,9 +1377,10 @@ const ConversationTimeline = memo(function ConversationTimeline({
               onWheel={forwardMinimapWheel}
               onSelect={(item) => scrollToRow(item.rowIndex)}
             />
-            {lastPrompt && lastPromptOutOfView ? (
+            {lastPrompt ? (
               <FloatingLastPrompt
                 text={lastPrompt.userText}
+                visible={lastPromptOutOfView}
                 onSelect={() => scrollToRow(lastPrompt.rowIndex)}
               />
             ) : null}
