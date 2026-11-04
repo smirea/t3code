@@ -393,6 +393,41 @@ export function resolveTimelineMinimapVisibleRange(state: {
   return { start, end };
 }
 
+/**
+ * Prompts act as sticky headers for their turns: the last prompt scrolled fully above the
+ * viewport sticks until the next prompt reaches the top. Offsets are viewport-relative.
+ */
+export function resolveStickyPrompt(input: {
+  readonly promptCount: number;
+  readonly promptBottom: (index: number) => number | undefined;
+  readonly promptTop: (index: number) => number | undefined;
+}): { readonly index: number; readonly nextPromptTop: number | null } | null {
+  let index = -1;
+  for (let candidate = 0; candidate < input.promptCount; candidate += 1) {
+    const bottom = input.promptBottom(candidate);
+    if (bottom === undefined || bottom > 0) break;
+    index = candidate;
+  }
+  if (index < 0) return null;
+  const nextPromptTop = index + 1 < input.promptCount ? input.promptTop(index + 1) : undefined;
+  if (nextPromptTop !== undefined && nextPromptTop <= 0) return null;
+  return { index, nextPromptTop: nextPromptTop ?? null };
+}
+
+const STICKY_PROMPT_GAP_PX = 8;
+
+export function resolveStickyPromptOffset(input: {
+  readonly nextPromptTop: number | null;
+  readonly layerTop: number;
+  readonly layerHeight: number;
+}): number {
+  if (input.nextPromptTop === null) return 0;
+  return Math.min(
+    0,
+    input.nextPromptTop - STICKY_PROMPT_GAP_PX - (input.layerTop + input.layerHeight),
+  );
+}
+
 export function isTimelineMinimapRowVisible(
   rowIndex: number,
   visibleStart: number | null | undefined,

@@ -89,6 +89,10 @@ function markdownNodeText(node: Nodes): string {
   return node.type === "link" && parseThreadLinkHref(text) !== null ? "a thread" : text;
 }
 
+export function markdownPreviewText(markdown: string): string {
+  return markdownNodeText(markdownPreviewParser.parse(markdown.slice(0, 1_500)));
+}
+
 function compactMinimapPreview(text: string | null | undefined) {
   const compact = text?.replace(/\s+/g, " ").trim() ?? "";
   return compact.length > 0 ? compact : null;
@@ -104,9 +108,7 @@ export function resolveTimelineMinimapPreview(
         userText: compactMinimapPreview(item.userText),
         // The tooltip shows three lines; bound parsing work while long responses stream.
         assistantText: compactMinimapPreview(
-          item.assistantText === null
-            ? null
-            : markdownNodeText(markdownPreviewParser.parse(item.assistantText.slice(0, 1_500))),
+          item.assistantText === null ? null : markdownPreviewText(item.assistantText),
         ),
       };
 }

@@ -9,7 +9,7 @@ import { WorkLogBlock } from "./WorkLog";
 import { TimelinePendingApprovalRow } from "./TimelinePendingApprovalRow";
 import type { WorktreeSetupSnapshot } from "@t3tools/contracts";
 import { deriveTimelineMinimapItems } from "./timelineMinimapItems";
-import { FloatingLastPrompt } from "./FloatingLastPrompt";
+import { FloatingPrompt } from "./FloatingPrompt";
 import {
   type AssistantCitation,
   type EnvironmentId,
@@ -49,6 +49,7 @@ import {
 import {
   LegendList,
   type LegendListRef,
+  type LegendListState,
   type MaintainScrollAtEndOptions,
 } from "@legendapp/list/react";
 import { type PendingApproval, type TimelineEntry } from "../../session-logic";
@@ -82,6 +83,8 @@ import {
   resolveTimelineMinimapHasPersistentGutter,
   resolveTimelineMinimapCurrentIndex,
   isTimelineMinimapRowVisible,
+  resolveStickyPrompt,
+  resolveStickyPromptOffset,
   resolveTimelineMinimapVisibleRange,
   resolveTimelineMinimapHitStripWidth,
   timelineTurnFoldRunIdsByEntryId,
@@ -807,7 +810,12 @@ const ConversationTimeline = memo(function ConversationTimeline({
         };
   const [minimapHitStripWidth, setMinimapHitStripWidth] = useState(0);
   const [minimapCurrentIndex, setMinimapCurrentIndex] = useState<number | null>(null);
-  const [lastPromptOutOfView, setLastPromptOutOfView] = useState(false);
+  // Keeps the last shown prompt while hidden so the exit animation has content.
+  const [floatingPrompt, setFloatingPrompt] = useState<{
+    readonly threadKey: string;
+    readonly itemId: string;
+    readonly visible: boolean;
+  } | null>(null);
   const handleAnchorReady = (info: { anchorIndex: number | undefined }) => {
     if (anchorMessageId !== null && info.anchorIndex !== undefined) {
       onAnchorReady(anchorMessageId, info.anchorIndex);
@@ -837,6 +845,69 @@ const ConversationTimeline = memo(function ConversationTimeline({
     shouldRestorePosition: shouldRestoreVisibleContentPosition,
   };
 
+  const resolveListScroll = (state: LegendListState) => {
+    const firstBufferedIndex = state.startBuffered;
+    const firstBufferedRow =
+      firstBufferedIndex == null ? undefined : state.elementAtIndex(firstBufferedIndex);
+    const firstBufferedTop =
+      firstBufferedIndex == null ? undefined : state.positionAtIndex(firstBufferedIndex);
+    const viewport: HTMLElement | undefined = listRef.current?.getScrollableNode();
+    // Cached row positions exclude the header and pending scroll adjustments.
+    return firstBufferedRow && viewport && firstBufferedTop !== undefined
+      ? firstBufferedTop +
+          viewport.getBoundingClientRect().top -
+          firstBufferedRow.getBoundingClientRect().top
+      : state.scroll;
+  };
+
+  const floatingPromptLayerRef = useRef<HTMLDivElement | null>(null);
+  // Runs from the scroll event itself so the push-out tracks the next prompt in the same frame.
+  const syncFloatingPrompt = () => {
+    const state = listRef.current?.getState?.();
+    const viewport = listRef.current?.getScrollableNode();
+    if (!state || !viewport || restoringThreadPosition || state.data !== rows) return;
+    const scroll = resolveListScroll(state);
+    const viewportTop = viewport.getBoundingClientRect().top;
+    const sticky = resolveStickyPrompt({
+      promptCount: minimapItems.length,
+      promptBottom: (index) => {
+        const row = minimapItems[index]!.rowIndex;
+        const top = state.positionAtIndex(row);
+        const size = state.sizeAtIndex(row);
+        return top === undefined || size === undefined ? undefined : top + size - scroll;
+      },
+      promptTop: (index) => {
+        const row = minimapItems[index]!.rowIndex;
+        const element = state.elementAtIndex(row);
+        const message = element?.querySelector("[data-message-role]") ?? element;
+        if (message) return message.getBoundingClientRect().top - viewportTop;
+        const top = state.positionAtIndex(row);
+        return top === undefined ? undefined : top - scroll;
+      },
+    });
+    const shown = sticky === null ? undefined : minimapItems[sticky.index];
+    setFloatingPrompt((current) => {
+      if (shown) {
+        return current?.visible &&
+          current.itemId === shown.id &&
+          current.threadKey === listIdentityKey
+          ? current
+          : { threadKey: listIdentityKey, itemId: shown.id, visible: true };
+      }
+      return current?.visible ? { ...current, visible: false } : current;
+    });
+    const layer = floatingPromptLayerRef.current;
+    if (layer && sticky !== null) {
+      const offset = resolveStickyPromptOffset({
+        nextPromptTop: sticky.nextPromptTop,
+        layerTop: layer.offsetTop,
+        layerHeight: layer.offsetHeight,
+      });
+      const translate = `0 ${offset}px`;
+      if (layer.style.translate !== translate) layer.style.translate = translate;
+    }
+  };
+
   const refreshMinimap = useStableCallback(() => {
     const state = listRef.current?.getState?.();
     if (restoringThreadPosition || state?.data !== rows) return;
@@ -844,19 +915,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
       return;
     }
 
-    const firstBufferedIndex = state.startBuffered;
-    const firstBufferedRow: HTMLElement | undefined =
-      firstBufferedIndex == null ? undefined : state.elementAtIndex(firstBufferedIndex);
-    const firstBufferedTop =
-      firstBufferedIndex == null ? undefined : state.positionAtIndex(firstBufferedIndex);
-    const viewport: HTMLElement | undefined = listRef.current?.getScrollableNode();
-    // Cached row positions exclude the header and pending scroll adjustments.
-    const scroll =
-      firstBufferedRow && viewport && firstBufferedTop !== undefined
-        ? firstBufferedTop +
-          viewport.getBoundingClientRect().top -
-          firstBufferedRow.getBoundingClientRect().top
-        : state.scroll;
+    const scroll = resolveListScroll(state);
     const visibleRange = resolveTimelineMinimapVisibleRange({ ...state, scroll });
     for (const item of minimapItems) {
       const strip = minimapStripMap.get(item.id);
@@ -879,12 +938,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     setMinimapCurrentIndex((current) =>
       current === nextCurrentIndex ? current : nextCurrentIndex,
     );
-    const lastPrompt = minimapItems.at(-1);
-    setLastPromptOutOfView(
-      lastPrompt !== undefined &&
-        visibleRange.start !== null &&
-        !isTimelineMinimapRowVisible(lastPrompt.rowIndex, visibleRange.start, visibleRange.end),
-    );
+    syncFloatingPrompt();
   });
 
   const minimapRefreshFrameRef = useRef<number | null>(null);
@@ -947,6 +1001,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     if (isAtEnd !== undefined && !citationPositioning) {
       onIsAtEndChange(isAtEnd);
     }
+    syncFloatingPrompt();
     scheduleMinimapRefresh();
   };
 
@@ -1276,7 +1331,10 @@ const ConversationTimeline = memo(function ConversationTimeline({
       viewOffset: 24,
     });
   };
-  const lastPrompt = minimapItems.at(-1);
+  const floatingPromptItem =
+    floatingPrompt?.threadKey === listIdentityKey
+      ? minimapItems.find((item) => item.id === floatingPrompt.itemId)
+      : undefined;
 
   const forwardMinimapWheel = (event: WheelEvent) => {
     const scrollNode = listRef.current?.getScrollableNode();
@@ -1377,11 +1435,12 @@ const ConversationTimeline = memo(function ConversationTimeline({
               onWheel={forwardMinimapWheel}
               onSelect={(item) => scrollToRow(item.rowIndex)}
             />
-            {lastPrompt ? (
-              <FloatingLastPrompt
-                text={lastPrompt.userText}
-                visible={lastPromptOutOfView}
-                onSelect={() => scrollToRow(lastPrompt.rowIndex)}
+            {floatingPromptItem ? (
+              <FloatingPrompt
+                ref={floatingPromptLayerRef}
+                text={floatingPromptItem.userText}
+                visible={floatingPrompt?.visible === true && !restoringThreadPosition}
+                onSelect={() => scrollToRow(floatingPromptItem.rowIndex)}
               />
             ) : null}
           </TooltipScrollDismissArea>

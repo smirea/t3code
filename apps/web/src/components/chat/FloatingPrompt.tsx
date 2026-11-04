@@ -1,22 +1,29 @@
 import { ChevronDownIcon } from "lucide-react";
-import { useState } from "react";
+import { useState, type Ref } from "react";
 
 import { observeResize } from "~/lib/observeResize";
 import { cn } from "~/lib/utils";
+import { markdownPreviewText } from "./timelineMinimapItems";
 
-export function FloatingLastPrompt(props: {
+export function FloatingPrompt({
+  ref,
+  text,
+  visible,
+  onSelect,
+}: {
+  readonly ref?: Ref<HTMLDivElement>;
   readonly text: string | null;
   readonly visible: boolean;
   readonly onSelect: () => void;
 }) {
-  const fullText = props.text?.trim() || "User message";
-  const compactText = fullText.replace(/\s+/g, " ");
+  const fullText = text?.trim() || "User message";
+  const compactText = markdownPreviewText(fullText).replace(/\s+/g, " ").trim() || fullText;
   const [expandedFor, setExpandedFor] = useState<string | null>(null);
-  const [wasVisible, setWasVisible] = useState(props.visible);
+  const [wasVisible, setWasVisible] = useState(visible);
   // Collapse on re-show rather than on hide, so the exit animation keeps its content.
-  if (props.visible !== wasVisible) {
-    setWasVisible(props.visible);
-    if (props.visible) setExpandedFor(null);
+  if (visible !== wasVisible) {
+    setWasVisible(visible);
+    if (visible) setExpandedFor(null);
   }
   const expanded = expandedFor === fullText;
   const [truncated, setTruncated] = useState(false);
@@ -29,16 +36,17 @@ export function FloatingLastPrompt(props: {
 
   return (
     <div
+      ref={ref}
       className="chat-composer-lane pointer-events-none absolute inset-x-0 top-2 z-30"
-      data-testid="floating-last-prompt"
-      data-visible={props.visible ? "true" : "false"}
-      inert={!props.visible}
+      data-testid="floating-prompt"
+      data-visible={visible ? "true" : "false"}
+      inert={!visible}
     >
       <div className="chat-content-lane flex justify-center">
         <div
           className={cn(
-            "relative max-w-full rounded-2xl border border-border/60 bg-message text-message-foreground text-sm leading-5 shadow-lg shadow-black/15 transition-[opacity,translate,scale] duration-200 ease-out motion-reduce:transition-none",
-            props.visible
+            "relative max-w-full rounded-2xl border border-border/60 bg-message text-message-foreground text-sm leading-5 shadow-lg shadow-black/15 transition-[opacity,translate,scale] duration-150 ease-out motion-reduce:transition-none",
+            visible
               ? "pointer-events-auto translate-y-0 scale-100 opacity-100"
               : "-translate-y-2 scale-[0.98] opacity-0",
           )}
@@ -50,9 +58,9 @@ export function FloatingLastPrompt(props: {
           ) : (
             <button
               type="button"
-              aria-label={`Jump to last prompt: ${compactText}`}
+              aria-label={`Jump to prompt: ${compactText}`}
               onPointerDown={(event) => event.preventDefault()}
-              onClick={props.onSelect}
+              onClick={onSelect}
               className={cn(
                 "block w-full cursor-pointer rounded-2xl py-2 ps-3 text-left transition-[filter] hover:brightness-95 focus-visible:outline-2 focus-visible:outline-ring dark:hover:brightness-110",
                 truncated ? "pe-9" : "pe-3",
