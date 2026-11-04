@@ -432,6 +432,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   );
   const restoringThreadPosition = positionedThreadKey !== listIdentityKey;
   const prefersReducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
+  const floatingPromptSupported = useMediaQuery("(min-width: 768px) and (pointer: fine)");
   const [settlingListIdentity, setSettlingListIdentity] = useState<string | null>(listIdentityKey);
   const [playingAudioRows, setPlayingAudioRows] = useState<ReadonlyMap<HTMLAudioElement, string>>(
     () => new Map(),
@@ -1428,7 +1429,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
               onWheel={forwardMinimapWheel}
               onSelect={(item) => scrollToRow(item.rowIndex)}
             />
-            {minimapItems.length > 0 ? (
+            {floatingPromptSupported && minimapItems.length > 0 ? (
               <FloatingPrompt
                 ref={floatingPromptZoneRef}
                 belowTopFade={topFadeEnabled}
