@@ -899,10 +899,17 @@ const ConversationTimeline = memo(function ConversationTimeline({
     const layer = zone.firstElementChild;
     if (shown && layer instanceof HTMLElement) {
       const bubbleBottom = layer.offsetTop + layer.offsetHeight;
-      const translate = `0 ${Math.min(0, nextTop - STICKY_PROMPT_GAP_PX - bubbleBottom)}px`;
+      // An expanded prompt is being read, so it overlays the next prompt instead of being pushed.
+      const offset =
+        zone.dataset.expanded === "true"
+          ? 0
+          : Math.min(0, nextTop - STICKY_PROMPT_GAP_PX - bubbleBottom);
+      const translate = `0 ${offset}px`;
       if (layer.style.translate !== translate) layer.style.translate = translate;
     }
   };
+
+  const syncFloatingPromptStable = useStableCallback(() => syncFloatingPrompt());
 
   const refreshMinimap = useStableCallback(() => {
     const state = listRef.current?.getState?.();
@@ -1449,6 +1456,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
                   onSelect={() => {
                     if (floatingPromptItem) scrollToRow(floatingPromptItem.rowIndex);
                   }}
+                  onLayoutChange={syncFloatingPromptStable}
                 />
               </TimelineRowCtx>
             ) : null}

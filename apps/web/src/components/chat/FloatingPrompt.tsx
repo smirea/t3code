@@ -14,12 +14,15 @@ export function FloatingPrompt({
   message,
   visible,
   onSelect,
+  onLayoutChange,
 }: {
   readonly ref?: Ref<HTMLDivElement>;
   readonly belowTopFade: boolean;
   readonly message: PromptMessage | null;
   readonly visible: boolean;
   readonly onSelect: () => void;
+  /** Called after the bubble's content swaps between collapsed and expanded. */
+  readonly onLayoutChange: () => void;
 }) {
   const [expandedFor, setExpandedFor] = useState<string | null>(null);
   const [wasVisible, setWasVisible] = useState(visible);
@@ -34,7 +37,11 @@ export function FloatingPrompt({
     if (!element) return;
     const measure = () => setTruncated(element.scrollHeight > element.clientHeight + 1);
     measure();
+    onLayoutChange();
     return observeResize(element, measure);
+  };
+  const attachExpanded = (element: HTMLDivElement | null) => {
+    if (element) onLayoutChange();
   };
   const label = message
     ? markdownPreviewText(message.text).replace(/\s+/g, " ").trim() || "User message"
@@ -51,6 +58,7 @@ export function FloatingPrompt({
       )}
       data-testid="floating-prompt"
       data-visible={visible ? "true" : "false"}
+      data-expanded={expanded ? "true" : "false"}
       inert={!visible}
     >
       <div className="chat-composer-lane absolute inset-x-0 top-0">
@@ -62,7 +70,10 @@ export function FloatingPrompt({
             )}
           >
             {message === null ? null : expanded ? (
-              <div className="max-h-[50vh] overflow-y-auto py-2 ps-3 pe-9">
+              <div
+                ref={attachExpanded}
+                className="max-h-[50vh] overflow-y-auto overscroll-contain py-2 ps-3 pe-9"
+              >
                 <UserPromptMarkdown message={message} />
               </div>
             ) : (
@@ -76,13 +87,8 @@ export function FloatingPrompt({
                   truncated ? "pe-9" : "pe-3",
                 )}
               >
-                {/* Links stay inert while collapsed so the whole bubble jumps to the prompt. */}
-                <div
-                  key={message.id}
-                  ref={measureClamp}
-                  className="pointer-events-none line-clamp-2 break-words"
-                >
-                  <UserPromptMarkdown message={message} />
+                <div key={message.id} ref={measureClamp} className="line-clamp-2 break-words">
+                  {label}
                 </div>
               </button>
             )}
