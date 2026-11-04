@@ -870,26 +870,18 @@ const ConversationTimeline = memo(function ConversationTimeline({
     const zoneTop = zone.getBoundingClientRect().top;
     const line =
       resolveListScroll(state, viewport) + zoneTop - viewport.getBoundingClientRect().top;
-    const promptEdge = (index: number, edge: "top" | "bottom") => {
+    const promptTop = (index: number) => {
       const row = minimapRowIndices[index]!;
       const message = state.elementAtIndex(row)?.querySelector("[data-message-role]");
-      if (message) {
-        const rect = message.getBoundingClientRect();
-        return (edge === "top" ? rect.top : rect.bottom) - zoneTop;
-      }
-      const top = state.positionAtIndex(row) - line;
-      return edge === "top" ? top : top + state.sizeAtIndex(row);
+      return message
+        ? message.getBoundingClientRect().top - zoneTop
+        : state.positionAtIndex(row) - line;
     };
-    const promptIndex = findLastIndex(
-      minimapRowIndices.length,
-      (index) => promptEdge(index, "top") <= 0,
-    );
+    // A prompt sticks as soon as its top reaches the line, like a sticky header.
+    const promptIndex = findLastIndex(minimapRowIndices.length, (index) => promptTop(index) < 0);
     const nextTop =
-      promptIndex + 1 < minimapRowIndices.length ? promptEdge(promptIndex + 1, "top") : Infinity;
-    const shown =
-      promptIndex >= 0 && promptEdge(promptIndex, "bottom") <= 0
-        ? minimapItems[promptIndex]
-        : undefined;
+      promptIndex + 1 < minimapRowIndices.length ? promptTop(promptIndex + 1) : Infinity;
+    const shown = minimapItems[promptIndex];
     setFloatingPrompt((current) => {
       if (shown) {
         return current?.visible &&

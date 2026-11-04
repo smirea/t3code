@@ -49,14 +49,12 @@ export function FloatingPrompt({
       data-visible={visible ? "true" : "false"}
       inert={!visible}
     >
-      <div className="chat-composer-lane absolute inset-x-0 top-1">
+      <div className="chat-composer-lane absolute inset-x-0 top-0">
         <div className="chat-content-lane flex justify-center">
           <div
             className={cn(
-              "relative max-w-full rounded-2xl border border-border/60 bg-message text-message-foreground text-sm leading-5 shadow-lg shadow-black/15 transition-[opacity,translate,scale] duration-150 ease-out motion-reduce:transition-none",
-              visible
-                ? "pointer-events-auto translate-y-0 scale-100 opacity-100"
-                : "-translate-y-2 scale-[0.98] opacity-0",
+              "relative max-w-full rounded-2xl border border-border/60 bg-message text-message-foreground text-sm leading-5 shadow-lg shadow-black/15 transition-opacity duration-150 ease-out motion-reduce:transition-none",
+              visible ? "pointer-events-auto opacity-100" : "opacity-0",
             )}
           >
             {expanded ? (
