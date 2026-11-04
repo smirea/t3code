@@ -96,6 +96,7 @@ import { TooltipScrollDismissArea } from "../ui/tooltip";
 import { WorktreeSetupCard } from "./WorktreeSetupCard";
 import { useOpenPrLink } from "~/lib/openPullRequestLink";
 import { useMediaQuery } from "~/hooks/useMediaQuery";
+import { useClientSettings } from "~/hooks/useSettings";
 import { cn } from "~/lib/utils";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
 import { type HandoffTimelineRun } from "./V2LifecycleRow";
@@ -432,7 +433,9 @@ const ConversationTimeline = memo(function ConversationTimeline({
   );
   const restoringThreadPosition = positionedThreadKey !== listIdentityKey;
   const prefersReducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
-  const floatingPromptSupported = useMediaQuery("(min-width: 768px) and (pointer: fine)");
+  const desktopViewport = useMediaQuery("(min-width: 768px) and (pointer: fine)");
+  const stickyPromptsEnabled = useClientSettings((settings) => settings.stickyPromptsEnabled);
+  const floatingPromptSupported = desktopViewport && stickyPromptsEnabled;
   const [settlingListIdentity, setSettlingListIdentity] = useState<string | null>(listIdentityKey);
   const [playingAudioRows, setPlayingAudioRows] = useState<ReadonlyMap<HTMLAudioElement, string>>(
     () => new Map(),

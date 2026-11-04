@@ -21,6 +21,7 @@ export function LabsSettingsPanel() {
       <SettingsSection id="beta" title="Beta">
         <BoringSidebarRow />
         <BoringSidebarMultilineRow />
+        <StickyPromptsRow />
         {/* Clerk is only mounted when this build has T3 Connect. */}
         {hasCloudPublicConfig() ? <GuestLinksRowWithSignIn /> : <GuestLinksRow />}
         <LinkedEnvironmentsRow />
@@ -66,6 +67,24 @@ function BoringSidebarMultilineRow() {
             updateSettings({ boringSidebarMultilineRows: Boolean(checked) })
           }
           aria-label="Two-line folder rows"
+        />
+      }
+    />
+  );
+}
+
+function StickyPromptsRow() {
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  return (
+    <SettingsRow
+      {...searchableSetting("sticky-prompts")}
+      description="While you read a long reply, keep the prompt that started it pinned at the top of the thread. Desktop only."
+      control={
+        <Switch
+          checked={settings.stickyPromptsEnabled}
+          onCheckedChange={(checked) => updateSettings({ stickyPromptsEnabled: Boolean(checked) })}
+          aria-label="Sticky prompts"
         />
       }
     />

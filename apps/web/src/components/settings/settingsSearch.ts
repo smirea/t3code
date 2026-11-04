@@ -466,6 +466,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["beta boring sidebar folder rows multiline branch pull request details"],
   },
   {
+    id: "sticky-prompts",
+    title: "Sticky prompts",
+    to: "/settings/labs",
+    searchTerms: ["beta floating pinned prompt header timeline scroll thread message"],
+  },
+  {
     id: "guest-links",
     title: "Guest links",
     to: "/settings/labs",
