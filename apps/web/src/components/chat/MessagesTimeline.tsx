@@ -9,6 +9,7 @@ import { WorkLogBlock } from "./WorkLog";
 import { TimelinePendingApprovalRow } from "./TimelinePendingApprovalRow";
 import type { WorktreeSetupSnapshot } from "@t3tools/contracts";
 import { deriveTimelineMinimapItems } from "./timelineMinimapItems";
+import { FloatingLastPrompt } from "./FloatingLastPrompt";
 import {
   type AssistantCitation,
   type EnvironmentId,
@@ -806,6 +807,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
         };
   const [minimapHitStripWidth, setMinimapHitStripWidth] = useState(0);
   const [minimapCurrentIndex, setMinimapCurrentIndex] = useState<number | null>(null);
+  const [lastPromptOutOfView, setLastPromptOutOfView] = useState(false);
   const handleAnchorReady = (info: { anchorIndex: number | undefined }) => {
     if (anchorMessageId !== null && info.anchorIndex !== undefined) {
       onAnchorReady(anchorMessageId, info.anchorIndex);
@@ -876,6 +878,12 @@ const ConversationTimeline = memo(function ConversationTimeline({
     });
     setMinimapCurrentIndex((current) =>
       current === nextCurrentIndex ? current : nextCurrentIndex,
+    );
+    const lastPrompt = minimapItems.at(-1);
+    setLastPromptOutOfView(
+      lastPrompt !== undefined &&
+        visibleRange.start !== null &&
+        !isTimelineMinimapRowVisible(lastPrompt.rowIndex, visibleRange.start, visibleRange.end),
     );
   });
 
@@ -1260,6 +1268,16 @@ const ConversationTimeline = memo(function ConversationTimeline({
     </TimelineListFooter>
   );
 
+  const scrollToRow = (rowIndex: number) => {
+    navigateTimeline();
+    void listRef.current?.scrollToIndex({
+      index: rowIndex,
+      animated: !window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+      viewOffset: 24,
+    });
+  };
+  const lastPrompt = minimapItems.at(-1);
+
   const forwardMinimapWheel = (event: WheelEvent) => {
     const scrollNode = listRef.current?.getScrollableNode();
     if (scrollNode) forwardWheelToTimeline(event, scrollNode);
@@ -1357,15 +1375,14 @@ const ConversationTimeline = memo(function ConversationTimeline({
               currentIndex={minimapCurrentIndex}
               stripMap={minimapStripMap}
               onWheel={forwardMinimapWheel}
-              onSelect={(item) => {
-                navigateTimeline();
-                void listRef.current?.scrollToIndex({
-                  index: item.rowIndex,
-                  animated: !window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-                  viewOffset: 24,
-                });
-              }}
+              onSelect={(item) => scrollToRow(item.rowIndex)}
             />
+            {lastPrompt && lastPromptOutOfView ? (
+              <FloatingLastPrompt
+                text={lastPrompt.userText}
+                onSelect={() => scrollToRow(lastPrompt.rowIndex)}
+              />
+            ) : null}
           </TooltipScrollDismissArea>
         </TimelineRowActivityCtx>
       </MarkdownFindContext>
