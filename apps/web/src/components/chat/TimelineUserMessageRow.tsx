@@ -1173,6 +1173,17 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
   );
 });
 
+export function UserPromptMarkdown({
+  message,
+}: {
+  message: Extract<TimelineRow, { kind: "message" }>["message"];
+}) {
+  const ctx = use(TimelineRowCtx);
+  const presentation = resolveUserMessagePresentation(message);
+  const resolved = resolveUserMessageContext({ ...message, text: presentation.text });
+  return <UserMessageBody text={resolved.text} skills={ctx.skills} markdownCwd={ctx.markdownCwd} />;
+}
+
 const UserMessageBody = memo(function UserMessageBody(props: {
   text: string;
   renderContextReference?: (reference: ChatMarkdownContextReference) => ReactNode;

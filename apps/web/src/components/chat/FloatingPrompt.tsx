@@ -1,25 +1,26 @@
 import { ChevronDownIcon } from "lucide-react";
-import { useState, type Ref } from "react";
+import { useState, type ComponentProps, type Ref } from "react";
 
 import { observeResize } from "~/lib/observeResize";
 import { cn } from "~/lib/utils";
 import { markdownPreviewText } from "./timelineMinimapItems";
+import { UserPromptMarkdown } from "./TimelineUserMessageRow";
+
+type PromptMessage = ComponentProps<typeof UserPromptMarkdown>["message"];
 
 export function FloatingPrompt({
   ref,
   belowTopFade,
-  text,
+  message,
   visible,
   onSelect,
 }: {
   readonly ref?: Ref<HTMLDivElement>;
   readonly belowTopFade: boolean;
-  readonly text: string | null;
+  readonly message: PromptMessage | null;
   readonly visible: boolean;
   readonly onSelect: () => void;
 }) {
-  const fullText = text?.trim() || "User message";
-  const compactText = markdownPreviewText(fullText).replace(/\s+/g, " ").trim() || fullText;
   const [expandedFor, setExpandedFor] = useState<string | null>(null);
   const [wasVisible, setWasVisible] = useState(visible);
   // Collapse on re-show rather than on hide, so the exit animation keeps its content.
@@ -27,14 +28,17 @@ export function FloatingPrompt({
     setWasVisible(visible);
     if (visible) setExpandedFor(null);
   }
-  const expanded = expandedFor === fullText;
+  const expanded = message !== null && expandedFor === message.id;
   const [truncated, setTruncated] = useState(false);
-  const measureClamp = (element: HTMLSpanElement | null) => {
+  const measureClamp = (element: HTMLDivElement | null) => {
     if (!element) return;
     const measure = () => setTruncated(element.scrollHeight > element.clientHeight + 1);
     measure();
     return observeResize(element, measure);
   };
+  const label = message
+    ? markdownPreviewText(message.text).replace(/\s+/g, " ").trim() || "User message"
+    : "User message";
 
   return (
     // The zone starts at the sticky line and clips only its top edge, so a pushed-out prompt
@@ -57,14 +61,14 @@ export function FloatingPrompt({
               visible ? "pointer-events-auto opacity-100" : "opacity-0",
             )}
           >
-            {expanded ? (
-              <div className="max-h-[50vh] overflow-y-auto py-2 ps-3 pe-9 whitespace-pre-wrap break-words">
-                {fullText}
+            {message === null ? null : expanded ? (
+              <div className="max-h-[50vh] overflow-y-auto py-2 ps-3 pe-9">
+                <UserPromptMarkdown message={message} />
               </div>
             ) : (
               <button
                 type="button"
-                aria-label={`Jump to prompt: ${compactText}`}
+                aria-label={`Jump to prompt: ${label}`}
                 onPointerDown={(event) => event.preventDefault()}
                 onClick={onSelect}
                 className={cn(
@@ -72,9 +76,14 @@ export function FloatingPrompt({
                   truncated ? "pe-9" : "pe-3",
                 )}
               >
-                <span key={compactText} ref={measureClamp} className="line-clamp-2 break-words">
-                  {compactText}
-                </span>
+                {/* Links stay inert while collapsed so the whole bubble jumps to the prompt. */}
+                <div
+                  key={message.id}
+                  ref={measureClamp}
+                  className="pointer-events-none line-clamp-2 break-words"
+                >
+                  <UserPromptMarkdown message={message} />
+                </div>
               </button>
             )}
             {truncated || expanded ? (
@@ -83,7 +92,7 @@ export function FloatingPrompt({
                 aria-label={expanded ? "Collapse prompt" : "Show full prompt"}
                 aria-expanded={expanded}
                 onPointerDown={(event) => event.preventDefault()}
-                onClick={() => setExpandedFor(expanded ? null : fullText)}
+                onClick={() => setExpandedFor(expanded || message === null ? null : message.id)}
                 className="absolute end-1.5 bottom-1.5 flex size-6 cursor-pointer items-center justify-center rounded-full text-message-foreground/70 hover:bg-foreground/10 hover:text-message-foreground focus-visible:outline-2 focus-visible:outline-ring"
               >
                 <ChevronDownIcon

@@ -1329,6 +1329,9 @@ const ConversationTimeline = memo(function ConversationTimeline({
     floatingPrompt?.threadKey === listIdentityKey
       ? minimapItems.find((item) => item.id === floatingPrompt.itemId)
       : undefined;
+  const floatingPromptRow = floatingPromptItem ? rows[floatingPromptItem.rowIndex] : undefined;
+  const floatingPromptMessage =
+    floatingPromptRow?.kind === "message" ? floatingPromptRow.message : null;
 
   const forwardMinimapWheel = (event: WheelEvent) => {
     const scrollNode = listRef.current?.getScrollableNode();
@@ -1430,19 +1433,21 @@ const ConversationTimeline = memo(function ConversationTimeline({
               onSelect={(item) => scrollToRow(item.rowIndex)}
             />
             {floatingPromptSupported && minimapItems.length > 0 ? (
-              <FloatingPrompt
-                ref={floatingPromptZoneRef}
-                belowTopFade={topFadeEnabled}
-                text={floatingPromptItem?.userText ?? null}
-                visible={
-                  floatingPromptItem !== undefined &&
-                  floatingPrompt?.visible === true &&
-                  !restoringThreadPosition
-                }
-                onSelect={() => {
-                  if (floatingPromptItem) scrollToRow(floatingPromptItem.rowIndex);
-                }}
-              />
+              <TimelineRowCtx value={sharedState}>
+                <FloatingPrompt
+                  ref={floatingPromptZoneRef}
+                  belowTopFade={topFadeEnabled}
+                  message={floatingPromptMessage}
+                  visible={
+                    floatingPromptItem !== undefined &&
+                    floatingPrompt?.visible === true &&
+                    !restoringThreadPosition
+                  }
+                  onSelect={() => {
+                    if (floatingPromptItem) scrollToRow(floatingPromptItem.rowIndex);
+                  }}
+                />
+              </TimelineRowCtx>
             ) : null}
           </TooltipScrollDismissArea>
         </TimelineRowActivityCtx>
