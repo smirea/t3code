@@ -1,8 +1,9 @@
-import { ChevronDownIcon, ImageIcon } from "lucide-react";
-import { useState, type Ref } from "react";
+import { ImageIcon } from "lucide-react";
+import { useState, type CSSProperties, type Ref } from "react";
 
 import { cn } from "~/lib/utils";
 import type { ChatMessage } from "../../types";
+import { Button } from "../ui/button";
 import type { MessagesTimelineRow } from "./MessagesTimeline.logic";
 import {
   LEADING_PROMPT_ROW_ID,
@@ -11,15 +12,16 @@ import {
 } from "./stickyPromptStore";
 import type { TimelineMinimapItem } from "./timelineMinimapItems";
 import {
+  BUBBLE_CHIP_CLASS_NAME,
   PinnedPromptPill,
   resolvePinnedPromptLook,
   UserPromptMarkdown,
+  type PinnedPromptLook,
 } from "./TimelineUserMessageRow";
 
 /**
- * Where to cut a block to its first two rendered lines, or null when it has two or fewer. A
- * height cut instead of `line-clamp` leaves no ellipsis after a paragraph that happens to end on
- * line two; the chevron's fade already says there is more.
+ * Where to cut a block to its first two rendered lines, or null when it has two or fewer. Cutting
+ * between lines two and three keeps the last line shown whole whatever the markdown's spacing.
  */
 function twoLineCut(element: HTMLElement): number | null {
   const lines: Array<{ top: number; bottom: number }> = [];
@@ -40,9 +42,129 @@ function twoLineCut(element: HTMLElement): number | null {
 }
 
 /**
+ * A prompt drawn like its timeline bubble: the row's markdown, fade and "Show full message"
+ * footer. Its height is set from outside; the body clips to whatever the footer leaves of it.
+ * Measuring writes `natural` (the whole prompt) and `target` (two lines and the footer) onto the
+ * card, so a scroll frame sizes it without reading layout.
+ */
+function PromptCard({
+  message,
+  look,
+  expanded,
+  leading,
+  style,
+  className,
+  onToggleExpanded,
+  onJump,
+  onMeasured,
+  onWheel,
+}: {
+  readonly message: ChatMessage;
+  readonly look: Extract<PinnedPromptLook, { kind: "bubble" }>;
+  readonly expanded: boolean;
+  readonly leading?: boolean;
+  readonly style?: CSSProperties | undefined;
+  readonly className?: string;
+  readonly onToggleExpanded: () => void;
+  readonly onJump: () => void;
+  readonly onMeasured: (card: HTMLElement) => void;
+  readonly onWheel?: (event: WheelEvent) => void;
+}) {
+  const forwardWheel = (card: HTMLDivElement | null) => {
+    if (!card || !onWheel || expanded) return;
+    card.addEventListener("wheel", onWheel, { passive: false });
+    return () => card.removeEventListener("wheel", onWheel);
+  };
+  const measure = (content: HTMLDivElement | null) => {
+    const card = content?.closest<HTMLElement>("[data-pinned-prompt-card]");
+    const footer = card?.querySelector<HTMLElement>("[data-pinned-prompt-footer]");
+    if (!content || !card || !footer) return;
+    // oxlint-disable-next-line t3code/no-raw-resize-observer -- writes DOM only, never React state; observeResize's flush would pull unrelated pending renders into every hand-off frame
+    const observer = new ResizeObserver(() => {
+      const cardStyle = getComputedStyle(card);
+      const padding = parseFloat(cardStyle.paddingTop) + parseFloat(cardStyle.paddingBottom);
+      const natural = content.offsetHeight + padding;
+      const cut = twoLineCut(content);
+      const footerHeight = footer.offsetHeight + parseFloat(getComputedStyle(footer).marginTop);
+      const target = cut === null ? natural : Math.min(natural, padding + cut + footerHeight);
+      card.dataset.natural = String(natural);
+      card.dataset.target = String(target);
+      onMeasured(card);
+    });
+    observer.observe(content);
+    return () => observer.disconnect();
+  };
+  return (
+    <div
+      ref={forwardWheel}
+      data-pinned-prompt-card=""
+      data-leading-prompt-anchor={leading ? "" : undefined}
+      data-expanded={expanded ? "true" : "false"}
+      data-truncated="false"
+      dir={look.dir}
+      style={style}
+      className={cn(
+        "group/pinned pointer-events-auto relative flex min-w-0 flex-col overflow-hidden rounded-2xl bg-message p-3 text-message-foreground",
+        "data-[expanded=true]:max-h-[50vh] data-[floating=true]:shadow-md data-[floating=true]:shadow-black/10 data-[floating=true]:ring-1 data-[floating=true]:ring-black/5 dark:data-[floating=true]:shadow-black/60 dark:data-[floating=true]:ring-white/15",
+        BUBBLE_CHIP_CLASS_NAME,
+        className,
+      )}
+    >
+      <div
+        className={cn(
+          "min-h-0 flex-1",
+          expanded
+            ? "overflow-y-auto overscroll-contain"
+            : // The row's collapsed fade, shortened on a two-line copy so its last line stays readable.
+              "overflow-hidden group-data-[truncated=true]/pinned:[mask-image:linear-gradient(to_bottom,#000_calc(100%_-_min(1.75rem,25%)),transparent)]",
+        )}
+      >
+        {/* Remounted on a toggle so the measure runs even when the height does not change. */}
+        <div key={`${message.id}:${expanded}`} ref={measure}>
+          <UserPromptMarkdown message={message} preview={!expanded} />
+        </div>
+      </div>
+      {expanded ? null : (
+        <button
+          type="button"
+          aria-label={`${leading ? "Load prompt" : "Jump to prompt"}: ${look.label}`}
+          onPointerDown={(event) => event.preventDefault()}
+          onClick={(event) => {
+            // The copy changes once the timeline lands on its prompt; focus must not stay.
+            event.currentTarget.blur();
+            onJump();
+          }}
+          className="absolute inset-0 cursor-pointer rounded-2xl hover:bg-foreground/[0.03] focus-visible:outline-2 focus-visible:outline-ring"
+        />
+      )}
+      <div
+        data-pinned-prompt-footer=""
+        className={cn(
+          "relative mt-1.5 flex items-center justify-end gap-2",
+          !expanded &&
+            "group-data-[truncated=false]/pinned:invisible group-data-[truncated=false]/pinned:absolute",
+        )}
+      >
+        <Button
+          type="button"
+          size="xs"
+          variant="ghost-muted"
+          aria-expanded={expanded}
+          onPointerDown={(event) => event.preventDefault()}
+          onClick={onToggleExpanded}
+          className="-ml-1"
+        >
+          {expanded ? "Show less" : "Show full message"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/**
  * The stuck prompt, pinned at the sticky line over its own timeline row. It takes the row
- * bubble's width and type, so at the hand-off it covers the row's first lines exactly and the
- * rest of the row scrolls on underneath it, like a sticky header.
+ * bubble's width and look and covers what is left of the row below the line, shrinking with it
+ * to two lines, so the prompt shows once and the rest of the timeline scrolls on underneath.
  */
 export function FloatingPrompt({
   ref,
@@ -84,6 +206,10 @@ export function FloatingPrompt({
   const expanded = message !== undefined && expandedRowId === pinned?.rowId;
   const look = message ? resolvePinnedPromptLook(message) : undefined;
   const toggleExpanded = () => setExpandedRowId(expanded ? null : (pinned?.rowId ?? null));
+  const jump = (target: ChatMessage) => {
+    if (prompt) onSelect(prompt.rowIndex);
+    else onSelectLeading(target);
+  };
 
   const resync = (element: HTMLSpanElement | null) => {
     if (element) onResync();
@@ -93,21 +219,8 @@ export function FloatingPrompt({
     card.addEventListener("wheel", onWheel, { passive: false });
     return () => card.removeEventListener("wheel", onWheel);
   };
-  // Measured after layout, so a hand-off never forces a layout to place the chevron.
-  const clampToTwoLines = (element: HTMLDivElement | null) => {
-    const card = element?.closest<HTMLElement>("[data-pinned-prompt-card]");
-    if (!element || !card) return;
-    // oxlint-disable-next-line t3code/no-raw-resize-observer -- writes DOM only, never React state; observeResize's flush would pull unrelated pending renders into every hand-off frame
-    const observer = new ResizeObserver(() => {
-      const cut = twoLineCut(element);
-      const maxHeight = cut === null ? "" : `${cut}px`;
-      if (element.style.maxHeight !== maxHeight) element.style.maxHeight = maxHeight;
-      const truncated = cut === null ? "false" : "true";
-      if (card.dataset.truncated !== truncated) card.dataset.truncated = truncated;
-    });
-    observer.observe(element);
-    return () => observer.disconnect();
-  };
+  const widthStyle = pinned?.width ? { width: pinned.width } : undefined;
+  const widthClassName = pinned?.width ? "max-w-full" : "max-w-[80%]";
 
   return (
     <div
@@ -122,87 +235,54 @@ export function FloatingPrompt({
       <div data-pinned-prompt-layer="" className="chat-composer-lane absolute inset-x-0 top-0">
         {look && message && pinned ? (
           <div className="chat-content-lane flex justify-end">
-            <div
-              ref={forwardWheel}
-              data-pinned-prompt-card=""
-              dir={look.kind === "bubble" ? look.dir : undefined}
-              style={pinned?.width ? { width: pinned.width } : undefined}
-              className={cn(
-                "group/pinned pointer-events-auto relative min-w-0 rounded-2xl bg-message text-message-foreground text-sm leading-relaxed shadow-md shadow-black/10 ring-1 ring-black/5 dark:shadow-black/60 dark:ring-white/15",
-                pinned?.width ? "max-w-full" : "max-w-[80%]",
-              )}
-            >
-              {look.kind !== "bubble" ? (
-                <>
-                  <PinnedPromptPill look={look} expanded={expanded} onToggle={toggleExpanded} />
-                  {expanded ? (
-                    <div className="max-h-[50vh] overflow-y-auto overscroll-contain px-3 pb-3">
-                      <UserPromptMarkdown message={message} />
-                    </div>
-                  ) : null}
-                </>
-              ) : expanded ? (
-                <div className="max-h-[50vh] overflow-y-auto overscroll-contain p-3 pe-9">
-                  <UserPromptMarkdown message={message} />
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  aria-label={`Jump to prompt: ${look.label}`}
-                  onPointerDown={(event) => event.preventDefault()}
-                  onClick={(event) => {
-                    // The copy changes once the timeline lands on its prompt; focus must not stay.
-                    event.currentTarget.blur();
-                    if (prompt) onSelect(prompt.rowIndex);
-                    else onSelectLeading(message);
-                  }}
-                  // Cut copies end on the boundary of the row's third line, so it shows whole below.
-                  className="block w-full cursor-pointer rounded-2xl p-3 text-start transition-[filter] group-data-[truncated=true]/pinned:pb-0 hover:brightness-95 focus-visible:outline-2 focus-visible:outline-ring dark:hover:brightness-110"
-                >
-                  {look.attachmentsOnly ? (
-                    <span className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
-                      <ImageIcon className="size-4 shrink-0" />
-                      <span className="truncate">{look.label}</span>
-                    </span>
-                  ) : (
-                    <div
-                      key={pinned.rowId}
-                      ref={clampToTwoLines}
-                      className="overflow-hidden break-words"
-                    >
-                      {look.paragraphs.map((paragraph) => (
-                        // Same paragraph spacing as the timeline's markdown, so lines match the row.
-                        <p key={paragraph.key} className="whitespace-pre-line [&+&]:mt-[0.65rem]">
-                          {paragraph.text}
-                        </p>
-                      ))}
-                    </div>
-                  )}
-                </button>
-              )}
-              {look.kind === "bubble" && !look.attachmentsOnly ? (
-                <div
-                  className={cn(
-                    "absolute end-0 bottom-0 rounded-ee-2xl bg-linear-to-l from-message from-60% to-transparent ps-8 pe-1.5 rtl:bg-linear-to-r",
-                    // Collapsed, the fade covers only the end of the last line shown.
-                    expanded
-                      ? "flex items-end pt-2 pb-1.5"
-                      : "hidden h-[1lh] items-center group-data-[truncated=true]/pinned:flex",
-                  )}
-                >
+            {look.kind === "bubble" && !look.attachmentsOnly ? (
+              <PromptCard
+                message={message}
+                look={look}
+                expanded={expanded}
+                style={widthStyle}
+                className={widthClassName}
+                onToggleExpanded={toggleExpanded}
+                onJump={() => jump(message)}
+                onMeasured={onResync}
+                onWheel={onWheel}
+              />
+            ) : (
+              <div
+                ref={forwardWheel}
+                data-pinned-prompt-card=""
+                style={widthStyle}
+                className={cn(
+                  "pointer-events-auto relative min-w-0 rounded-2xl bg-message text-message-foreground text-sm leading-relaxed shadow-md shadow-black/10 ring-1 ring-black/5 dark:shadow-black/60 dark:ring-white/15",
+                  widthClassName,
+                )}
+              >
+                {look.kind !== "bubble" ? (
+                  <>
+                    <PinnedPromptPill look={look} expanded={expanded} onToggle={toggleExpanded} />
+                    {expanded ? (
+                      <div className="max-h-[50vh] overflow-y-auto overscroll-contain px-3 pb-3">
+                        <UserPromptMarkdown message={message} />
+                      </div>
+                    ) : null}
+                  </>
+                ) : (
                   <button
                     type="button"
-                    aria-label={expanded ? "Collapse prompt" : "Show full prompt"}
-                    aria-expanded={expanded}
+                    aria-label={`Jump to prompt: ${look.label}`}
                     onPointerDown={(event) => event.preventDefault()}
-                    onClick={toggleExpanded}
-                    className="flex size-6 cursor-pointer items-center justify-center rounded-full text-message-foreground/70 hover:bg-foreground/10 hover:text-message-foreground focus-visible:outline-2 focus-visible:outline-ring"
+                    onClick={(event) => {
+                      event.currentTarget.blur();
+                      jump(message);
+                    }}
+                    className="flex w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-2xl p-3 text-start text-muted-foreground hover:brightness-95 focus-visible:outline-2 focus-visible:outline-ring dark:hover:brightness-110"
                   >
-                    <ChevronDownIcon className={cn("size-4", expanded && "rotate-180")} />
+                    <ImageIcon className="size-4 shrink-0" />
+                    <span className="truncate">{look.label}</span>
                   </button>
-                </div>
-              ) : null}
-            </div>
+                )}
+              </div>
+            )}
           </div>
         ) : null}
       </div>
@@ -212,7 +292,8 @@ export function FloatingPrompt({
 
 /**
  * The prompt of the turn the loaded history opens inside, shown where it belongs: above the
- * loaded rows. Its text has loaded, its row has not; clicking it loads history through it.
+ * loaded rows, at the two lines a pinned prompt shrinks to. Its text has loaded, its row has not;
+ * clicking it loads history through it.
  */
 export function LeadingPromptPreview({
   message,
@@ -221,38 +302,31 @@ export function LeadingPromptPreview({
   readonly message: ChatMessage;
   readonly onSelect: (message: ChatMessage) => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
   const look = resolvePinnedPromptLook(message);
-  if (look.kind !== "bubble") return null;
-  const clampToTwoLines = (element: HTMLDivElement | null) => {
-    if (!element) return;
-    // oxlint-disable-next-line t3code/no-raw-resize-observer -- writes DOM only, never React state; observeResize's flush would pull unrelated pending renders into the frame
-    const observer = new ResizeObserver(() => {
-      const cut = twoLineCut(element);
-      const maxHeight = cut === null ? "" : `${cut}px`;
-      if (element.style.maxHeight !== maxHeight) element.style.maxHeight = maxHeight;
-    });
-    observer.observe(element);
-    return () => observer.disconnect();
+  if (look.kind !== "bubble" || look.attachmentsOnly) return null;
+  const clampToTarget = (card: HTMLElement) => {
+    const natural = Number(card.dataset.natural);
+    const target = Number(card.dataset.target);
+    const open = card.dataset.expanded === "true";
+    const height = open ? "" : `${target}px`;
+    if (card.style.height !== height) card.style.height = height;
+    const truncated = !open && target < natural - 0.5 ? "true" : "false";
+    if (card.dataset.truncated !== truncated) card.dataset.truncated = truncated;
   };
   return (
     <div className="messages-timeline-row-frame pb-4">
       <div className="chat-content-lane flex justify-end">
-        <button
-          type="button"
-          data-leading-prompt-anchor=""
-          dir={look.dir}
-          aria-label={`Load prompt: ${look.label}`}
-          onClick={() => onSelect(message)}
-          className="min-w-0 max-w-[80%] cursor-pointer rounded-2xl bg-message p-3 text-start text-message-foreground text-sm leading-relaxed transition-[filter] hover:brightness-95 focus-visible:outline-2 focus-visible:outline-ring dark:hover:brightness-110"
-        >
-          <div key={message.id} ref={clampToTwoLines} className="overflow-hidden break-words">
-            {look.paragraphs.map((paragraph) => (
-              <p key={paragraph.key} className="whitespace-pre-line [&+&]:mt-[0.65rem]">
-                {paragraph.text}
-              </p>
-            ))}
-          </div>
-        </button>
+        <PromptCard
+          message={message}
+          look={look}
+          expanded={expanded}
+          leading
+          className="max-w-[80%]"
+          onToggleExpanded={() => setExpanded((value) => !value)}
+          onJump={() => onSelect(message)}
+          onMeasured={clampToTarget}
+        />
       </div>
     </div>
   );

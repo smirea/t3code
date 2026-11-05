@@ -96,7 +96,7 @@ import {
 const MEDIA_EDGE_CLASS_NAME =
   "relative after:pointer-events-none after:absolute after:inset-0 after:z-10 after:rounded-[inherit] after:ring-1 after:ring-inset after:ring-black/9 dark:after:ring-white/12";
 
-const BUBBLE_CHIP_CLASS_NAME =
+export const BUBBLE_CHIP_CLASS_NAME =
   "[&_[data-slot=context-chip]]:[--context-chip-ink:var(--context-chip-message,var(--context-chip-accent))]";
 
 function UserFileCard({
@@ -1187,8 +1187,6 @@ function resolveUserPromptText(message: UserPromptMessage): string {
 export type PinnedPromptLook =
   | {
       readonly kind: "bubble";
-      /** Plain text in the row's paragraphs and lines, so the copy wraps like the row. */
-      readonly paragraphs: ReadonlyArray<{ readonly key: string; readonly text: string }>;
       /** The prompt has no text, so the copy names its attachments instead. */
       readonly attachmentsOnly: boolean;
       readonly label: string;
@@ -1210,26 +1208,19 @@ const pinnedLookCache = new Map<
   { readonly source: string; readonly look: PinnedPromptLook }
 >();
 
-/** Cached per prompt: hand-offs repeat while scrolling, and the plain text needs a markdown parse. */
+/** Cached per prompt: hand-offs repeat while scrolling, and the label needs a markdown parse. */
 export function resolvePinnedPromptLook(message: UserPromptMessage): PinnedPromptLook {
   const cached = pinnedLookCache.get(message.id);
   if (cached?.source === message.text) return cached.look;
   const presentation = resolveUserMessagePresentation(message);
   const text = resolveUserPromptText(message);
   const firstLine = text.trim().split(/\r?\n/, 1)[0] ?? "";
-  const paragraphs = replaceComposerContextReferences(text, (reference) => reference.label)
-    .split(/\r?\n/)
-    .slice(0, 20)
-    .join("\n")
-    .split(/\n\s*\n/)
-    .map((paragraph) =>
-      paragraph
-        .split("\n")
-        .map((line) => markdownPreviewText(line).replace(/\s+/g, " ").trim())
-        .filter((line) => line.length > 0)
-        .join("\n"),
-    )
-    .filter((paragraph) => paragraph.length > 0);
+  const plain = markdownPreviewText(
+    replaceComposerContextReferences(text, (reference) => reference.label),
+  )
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 200);
   const attachmentNames = (message.attachments ?? []).map((attachment) => attachment.name);
   const look: PinnedPromptLook =
     presentation.attribution === "automation"
@@ -1238,11 +1229,8 @@ export function resolvePinnedPromptLook(message: UserPromptMessage): PinnedPromp
         ? { kind: "agent", senderThreadId: message.senderThreadId, summary: firstLine }
         : {
             kind: "bubble",
-            paragraphs: (paragraphs.length > 0 ? paragraphs : [attachmentNames.join(", ")]).map(
-              (paragraph, index) => ({ key: `${message.id}:${index}`, text: paragraph }),
-            ),
-            attachmentsOnly: paragraphs.length === 0,
-            label: paragraphs.join(" ") || attachmentNames.join(", ") || "User message",
+            attachmentsOnly: plain.length === 0,
+            label: plain || attachmentNames.join(", ") || "User message",
             dir: markdownProseDirection(text),
           };
   if (pinnedLookCache.size > 500) pinnedLookCache.clear();
@@ -1289,11 +1277,25 @@ export function PinnedPromptPill({
   );
 }
 
-export function UserPromptMarkdown({ message }: { message: UserPromptMessage }) {
+/** Past this, a preview renders only the prompt's opening, which is all a clipped copy can show. */
+const PROMPT_PREVIEW_CHARS = 3_000;
+
+export function UserPromptMarkdown({
+  message,
+  preview = false,
+}: {
+  message: UserPromptMessage;
+  preview?: boolean;
+}) {
   const ctx = use(TimelineRowCtx);
+  const text = resolveUserPromptText(message);
+  const cut =
+    preview && text.length > PROMPT_PREVIEW_CHARS
+      ? text.lastIndexOf("\n", PROMPT_PREVIEW_CHARS)
+      : -1;
   return (
     <UserMessageBody
-      text={resolveUserPromptText(message)}
+      text={cut > 0 ? text.slice(0, cut) : preview ? text.slice(0, PROMPT_PREVIEW_CHARS) : text}
       skills={ctx.skills}
       markdownCwd={ctx.markdownCwd}
     />
