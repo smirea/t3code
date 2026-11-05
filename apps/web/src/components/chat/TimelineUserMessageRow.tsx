@@ -1189,6 +1189,8 @@ export type PinnedPromptLook =
       readonly kind: "bubble";
       /** Plain text in the row's paragraphs and lines, so the copy wraps like the row. */
       readonly paragraphs: ReadonlyArray<{ readonly key: string; readonly text: string }>;
+      /** The prompt has no text, so the copy names its attachments instead. */
+      readonly attachmentsOnly: boolean;
       readonly label: string;
       readonly dir: ReturnType<typeof markdownProseDirection>;
     }
@@ -1239,6 +1241,7 @@ export function resolvePinnedPromptLook(message: UserPromptMessage): PinnedPromp
             paragraphs: (paragraphs.length > 0 ? paragraphs : [attachmentNames.join(", ")]).map(
               (paragraph, index) => ({ key: `${message.id}:${index}`, text: paragraph }),
             ),
+            attachmentsOnly: paragraphs.length === 0,
             label: paragraphs.join(" ") || attachmentNames.join(", ") || "User message",
             dir: markdownProseDirection(text),
           };

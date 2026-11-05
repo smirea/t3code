@@ -1,7 +1,6 @@
-import { ChevronDownIcon } from "lucide-react";
+import { ChevronDownIcon, ImageIcon } from "lucide-react";
 import { useState, type Ref } from "react";
 
-import { observeResize } from "~/lib/observeResize";
 import { cn } from "~/lib/utils";
 import type { MessagesTimelineRow } from "./MessagesTimeline.logic";
 import { useStickyPrompt, type StickyPromptStore } from "./stickyPromptStore";
@@ -11,6 +10,29 @@ import {
   resolvePinnedPromptLook,
   UserPromptMarkdown,
 } from "./TimelineUserMessageRow";
+
+/**
+ * Where to cut a block to its first two rendered lines, or null when it has two or fewer. A
+ * height cut instead of `line-clamp` leaves no ellipsis after a paragraph that happens to end on
+ * line two; the chevron's fade already says there is more.
+ */
+function twoLineCut(element: HTMLElement): number | null {
+  const lines: Array<{ top: number; bottom: number }> = [];
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+  const range = document.createRange();
+  for (let node = walker.nextNode(); node && lines.length < 3; node = walker.nextNode()) {
+    range.selectNodeContents(node);
+    for (const rect of range.getClientRects()) {
+      if (rect.width === 0) continue;
+      const line = lines.find((candidate) => Math.abs(candidate.top - rect.top) < 1);
+      if (line) line.bottom = Math.max(line.bottom, rect.bottom);
+      else lines.push({ top: rect.top, bottom: rect.bottom });
+    }
+  }
+  if (lines.length < 3) return null;
+  lines.sort((a, b) => a.top - b.top);
+  return (lines[1]!.bottom + lines[2]!.top) / 2 - element.getBoundingClientRect().top;
+}
 
 /**
  * The stuck prompt, pinned at the sticky line over its own timeline row. It takes the row
@@ -25,6 +47,7 @@ export function FloatingPrompt({
   resyncKey,
   onSelect,
   onResync,
+  onWheel,
 }: {
   readonly ref?: Ref<HTMLDivElement>;
   readonly store: StickyPromptStore;
@@ -34,6 +57,8 @@ export function FloatingPrompt({
   readonly resyncKey: string;
   readonly onSelect: (rowIndex: number) => void;
   readonly onResync: () => void;
+  /** The collapsed copy sits over the timeline, so wheeling on it scrolls the timeline. */
+  readonly onWheel: (event: WheelEvent) => void;
 }) {
   const pinned = useStickyPrompt(store);
   const prompt = pinned ? prompts.find((item) => item.id === pinned.rowId) : undefined;
@@ -48,14 +73,25 @@ export function FloatingPrompt({
   const resync = (element: HTMLSpanElement | null) => {
     if (element) onResync();
   };
-  // Measured after layout, so a hand-off never forces a synchronous layout to place the chevron.
-  const watchClamp = (element: HTMLDivElement | null) => {
+  const forwardWheel = (card: HTMLDivElement | null) => {
+    if (!card || expanded) return;
+    card.addEventListener("wheel", onWheel, { passive: false });
+    return () => card.removeEventListener("wheel", onWheel);
+  };
+  // Measured after layout, so a hand-off never forces a layout to place the chevron.
+  const clampToTwoLines = (element: HTMLDivElement | null) => {
     const card = element?.closest<HTMLElement>("[data-pinned-prompt-card]");
     if (!element || !card) return;
-    return observeResize(element, () => {
-      const truncated = element.scrollHeight > element.clientHeight + 1 ? "true" : "false";
+    // oxlint-disable-next-line t3code/no-raw-resize-observer -- writes DOM only, never React state; observeResize's flush would pull unrelated pending renders into every hand-off frame
+    const observer = new ResizeObserver(() => {
+      const cut = twoLineCut(element);
+      const maxHeight = cut === null ? "" : `${cut}px`;
+      if (element.style.maxHeight !== maxHeight) element.style.maxHeight = maxHeight;
+      const truncated = cut === null ? "false" : "true";
       if (card.dataset.truncated !== truncated) card.dataset.truncated = truncated;
     });
+    observer.observe(element);
+    return () => observer.disconnect();
   };
 
   return (
@@ -72,10 +108,12 @@ export function FloatingPrompt({
         {look && message && prompt ? (
           <div className="chat-content-lane flex justify-end">
             <div
+              ref={forwardWheel}
               data-pinned-prompt-card=""
+              dir={look.kind === "bubble" ? look.dir : undefined}
               style={pinned?.width ? { width: pinned.width } : undefined}
               className={cn(
-                "group/pinned pointer-events-auto relative min-w-0 rounded-2xl bg-message text-message-foreground text-sm leading-relaxed shadow-md shadow-black/10 ring-1 ring-black/5 dark:shadow-black/60 dark:ring-white/10",
+                "group/pinned pointer-events-auto relative min-w-0 rounded-2xl bg-message text-message-foreground text-sm leading-relaxed shadow-md shadow-black/10 ring-1 ring-black/5 dark:shadow-black/60 dark:ring-white/15",
                 pinned?.width ? "max-w-full" : "max-w-[80%]",
               )}
             >
@@ -89,10 +127,7 @@ export function FloatingPrompt({
                   ) : null}
                 </>
               ) : expanded ? (
-                <div
-                  dir={look.dir}
-                  className="max-h-[50vh] overflow-y-auto overscroll-contain p-3 pe-9"
-                >
+                <div className="max-h-[50vh] overflow-y-auto overscroll-contain p-3 pe-9">
                   <UserPromptMarkdown message={message} />
                 </div>
               ) : (
@@ -105,28 +140,38 @@ export function FloatingPrompt({
                     event.currentTarget.blur();
                     onSelect(prompt.rowIndex);
                   }}
-                  className="block w-full cursor-pointer rounded-2xl p-3 text-start transition-[filter] hover:brightness-95 focus-visible:outline-2 focus-visible:outline-ring dark:hover:brightness-110"
+                  // Cut copies end on the boundary of the row's third line, so it shows whole below.
+                  className="block w-full cursor-pointer rounded-2xl p-3 text-start transition-[filter] group-data-[truncated=true]/pinned:pb-0 hover:brightness-95 focus-visible:outline-2 focus-visible:outline-ring dark:hover:brightness-110"
                 >
-                  <div
-                    key={prompt.id}
-                    ref={watchClamp}
-                    dir={look.dir}
-                    className="line-clamp-2 break-words"
-                  >
-                    {look.paragraphs.map((paragraph) => (
-                      // Same paragraph spacing as the timeline's markdown, so lines match the row.
-                      <p key={paragraph.key} className="whitespace-pre-line [&+&]:mt-[0.65rem]">
-                        {paragraph.text}
-                      </p>
-                    ))}
-                  </div>
+                  {look.attachmentsOnly ? (
+                    <span className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
+                      <ImageIcon className="size-4 shrink-0" />
+                      <span className="truncate">{look.label}</span>
+                    </span>
+                  ) : (
+                    <div
+                      key={prompt.id}
+                      ref={clampToTwoLines}
+                      className="overflow-hidden break-words"
+                    >
+                      {look.paragraphs.map((paragraph) => (
+                        // Same paragraph spacing as the timeline's markdown, so lines match the row.
+                        <p key={paragraph.key} className="whitespace-pre-line [&+&]:mt-[0.65rem]">
+                          {paragraph.text}
+                        </p>
+                      ))}
+                    </div>
+                  )}
                 </button>
               )}
-              {look.kind === "bubble" ? (
+              {look.kind === "bubble" && !look.attachmentsOnly ? (
                 <div
                   className={cn(
-                    "absolute end-0 bottom-0 items-end rounded-ee-2xl bg-linear-to-l from-message from-60% to-transparent ps-8 pe-1.5 pt-2 pb-1.5",
-                    expanded ? "flex" : "hidden group-data-[truncated=true]/pinned:flex",
+                    "absolute end-0 bottom-0 rounded-ee-2xl bg-linear-to-l from-message from-60% to-transparent ps-8 pe-1.5 rtl:bg-linear-to-r",
+                    // Collapsed, the fade covers only the end of the last line shown.
+                    expanded
+                      ? "flex items-end pt-2 pb-1.5"
+                      : "hidden h-[1lh] items-center group-data-[truncated=true]/pinned:flex",
                   )}
                 >
                   <button
