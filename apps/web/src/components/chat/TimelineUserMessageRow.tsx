@@ -80,6 +80,7 @@ import { useMediaQuery } from "~/hooks/useMediaQuery";
 import { formatChatTimestampTooltip, formatDayAwareTimestamp } from "../../timestampFormat";
 import { WorkflowOpeningBlock } from "./WorkflowOpeningBlock";
 import { TimelineRowCtx, TimelineRowActivityCtx, type TimelineRow } from "./timelineRowContext";
+import { useIsStuckPrompt } from "./stickyPromptStore";
 import {
   MESSAGE_HEADING_LEVEL,
   MessageAuthorHeading,
@@ -250,12 +251,16 @@ export function UserMessageRow({ row }: { row: Extract<TimelineRow, { kind: "mes
   const ctx = use(TimelineRowCtx);
   const item = row.projectedItem?.item;
   const modelSwitch = item?.type === "user_message" ? item.modelSwitch : undefined;
+  // While pinned under the nav, the pinned copy stands in for the row; it keeps its space.
+  const stuck = useIsStuckPrompt(ctx.stickyPrompt, row.id);
   return (
     <>
       {modelSwitch ? (
         <ModelSwitchRow environmentId={ctx.activeThreadEnvironmentId} modelSwitch={modelSwitch} />
       ) : null}
-      <UserMessageContent row={row} />
+      <div data-sticky-prompt-anchor="" className={stuck ? "invisible" : undefined}>
+        <UserMessageContent row={row} />
+      </div>
     </>
   );
 }
@@ -1173,15 +1178,22 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
   );
 });
 
-export function UserPromptMarkdown({
-  message,
-}: {
-  message: Extract<TimelineRow, { kind: "message" }>["message"];
-}) {
-  const ctx = use(TimelineRowCtx);
+type UserPromptMessage = Extract<TimelineRow, { kind: "message" }>["message"];
+
+export function resolveUserPromptText(message: UserPromptMessage): string {
   const presentation = resolveUserMessagePresentation(message);
-  const resolved = resolveUserMessageContext({ ...message, text: presentation.text });
-  return <UserMessageBody text={resolved.text} skills={ctx.skills} markdownCwd={ctx.markdownCwd} />;
+  return resolveUserMessageContext({ ...message, text: presentation.text }).text;
+}
+
+export function UserPromptMarkdown({ message }: { message: UserPromptMessage }) {
+  const ctx = use(TimelineRowCtx);
+  return (
+    <UserMessageBody
+      text={resolveUserPromptText(message)}
+      skills={ctx.skills}
+      markdownCwd={ctx.markdownCwd}
+    />
+  );
 }
 
 const UserMessageBody = memo(function UserMessageBody(props: {

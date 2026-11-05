@@ -1,38 +1,43 @@
 import { ChevronDownIcon } from "lucide-react";
-import { useState, type ComponentProps, type Ref } from "react";
+import { useState, type Ref } from "react";
 
 import { observeResize } from "~/lib/observeResize";
 import { cn } from "~/lib/utils";
-import { markdownPreviewText } from "./timelineMinimapItems";
-import { UserPromptMarkdown } from "./TimelineUserMessageRow";
+import type { MessagesTimelineRow } from "./MessagesTimeline.logic";
+import { useStuckPromptRowId, type StickyPromptStore } from "./stickyPromptStore";
+import { markdownPreviewText, type TimelineMinimapItem } from "./timelineMinimapItems";
+import { resolveUserPromptText, UserPromptMarkdown } from "./TimelineUserMessageRow";
 
-type PromptMessage = ComponentProps<typeof UserPromptMarkdown>["message"];
-
+/**
+ * The copy of the stuck prompt pinned under the nav. It matches the timeline's user bubble so the
+ * hand-off from the row is in place; the row hides itself while this copy shows.
+ */
 export function FloatingPrompt({
   ref,
+  store,
+  prompts,
+  rows,
   belowTopFade,
-  message,
-  visible,
   onSelect,
   onLayoutChange,
 }: {
   readonly ref?: Ref<HTMLDivElement>;
+  readonly store: StickyPromptStore;
+  readonly prompts: ReadonlyArray<TimelineMinimapItem>;
+  readonly rows: ReadonlyArray<MessagesTimelineRow>;
   readonly belowTopFade: boolean;
-  readonly message: PromptMessage | null;
-  readonly visible: boolean;
-  readonly onSelect: () => void;
-  /** Called after the bubble's content swaps between collapsed and expanded. */
+  readonly onSelect: (rowIndex: number) => void;
+  /** Called after the pinned copy's content swaps, so the push-out offset can be remeasured. */
   readonly onLayoutChange: () => void;
 }) {
-  const [expandedFor, setExpandedFor] = useState<string | null>(null);
-  const [wasVisible, setWasVisible] = useState(visible);
-  // Collapse on re-show rather than on hide, so the exit animation keeps its content.
-  if (visible !== wasVisible) {
-    setWasVisible(visible);
-    if (visible) setExpandedFor(null);
-  }
-  const expanded = message !== null && expandedFor === message.id;
+  const stuckRowId = useStuckPromptRowId(store);
+  const prompt = stuckRowId === null ? undefined : prompts.find((item) => item.id === stuckRowId);
+  const row = prompt ? rows[prompt.rowIndex] : undefined;
+  const message = row?.kind === "message" ? row.message : undefined;
+  const [expandedRowId, setExpandedRowId] = useState<string | null>(null);
+  const expanded = message !== undefined && expandedRowId === stuckRowId;
   const [truncated, setTruncated] = useState(false);
+
   const measureClamp = (element: HTMLDivElement | null) => {
     if (!element) return;
     const measure = () => setTruncated(element.scrollHeight > element.clientHeight + 1);
@@ -44,8 +49,9 @@ export function FloatingPrompt({
     if (element) onLayoutChange();
   };
   const label = message
-    ? markdownPreviewText(message.text).replace(/\s+/g, " ").trim() || "User message"
-    : "User message";
+    ? markdownPreviewText(resolveUserPromptText(message)).replace(/\s+/g, " ").trim() ||
+      "User message"
+    : "";
 
   return (
     // The zone starts at the sticky line and clips only its top edge, so a pushed-out prompt
@@ -57,60 +63,52 @@ export function FloatingPrompt({
         belowTopFade ? "top-(--workspace-titlebar-scroll-fade-height)" : "top-0",
       )}
       data-testid="floating-prompt"
-      data-visible={visible ? "true" : "false"}
+      data-visible={message ? "true" : "false"}
+      data-row-id={message ? stuckRowId : undefined}
       data-expanded={expanded ? "true" : "false"}
-      inert={!visible}
     >
       <div className="chat-composer-lane absolute inset-x-0 top-0">
-        <div className="chat-content-lane flex justify-center">
-          <div
-            className={cn(
-              "relative max-w-full rounded-2xl border border-border/60 bg-message text-message-foreground text-sm leading-5 shadow-lg shadow-black/15 transition-opacity duration-150 ease-out motion-reduce:transition-none",
-              visible ? "pointer-events-auto opacity-100" : "opacity-0",
-            )}
-          >
-            {message === null ? null : expanded ? (
-              <div
-                ref={attachExpanded}
-                className="max-h-[50vh] overflow-y-auto overscroll-contain py-2 ps-3 pe-9"
-              >
-                <UserPromptMarkdown message={message} />
-              </div>
-            ) : (
-              <button
-                type="button"
-                aria-label={`Jump to prompt: ${label}`}
-                onPointerDown={(event) => event.preventDefault()}
-                onClick={onSelect}
-                className={cn(
-                  "block w-full cursor-pointer rounded-2xl py-2 ps-3 text-left transition-[filter] hover:brightness-95 focus-visible:outline-2 focus-visible:outline-ring dark:hover:brightness-110",
-                  truncated ? "pe-9" : "pe-3",
-                )}
-              >
-                <div key={message.id} ref={measureClamp} className="line-clamp-2 break-words">
-                  {label}
+        {message && prompt ? (
+          <div className="chat-content-lane flex justify-end">
+            <div className="pointer-events-auto relative min-w-0 max-w-[80%] rounded-2xl bg-message text-message-foreground text-sm leading-relaxed shadow-md shadow-black/10">
+              {expanded ? (
+                <div
+                  ref={attachExpanded}
+                  className="max-h-[50vh] overflow-y-auto overscroll-contain p-3 pe-9"
+                >
+                  <UserPromptMarkdown message={message} />
                 </div>
-              </button>
-            )}
-            {truncated || expanded ? (
-              <button
-                type="button"
-                aria-label={expanded ? "Collapse prompt" : "Show full prompt"}
-                aria-expanded={expanded}
-                onPointerDown={(event) => event.preventDefault()}
-                onClick={() => setExpandedFor(expanded || message === null ? null : message.id)}
-                className="absolute end-1.5 bottom-1.5 flex size-6 cursor-pointer items-center justify-center rounded-full text-message-foreground/70 hover:bg-foreground/10 hover:text-message-foreground focus-visible:outline-2 focus-visible:outline-ring"
-              >
-                <ChevronDownIcon
+              ) : (
+                <button
+                  type="button"
+                  aria-label={`Jump to prompt: ${label}`}
+                  onPointerDown={(event) => event.preventDefault()}
+                  onClick={() => onSelect(prompt.rowIndex)}
                   className={cn(
-                    "size-4 transition-transform duration-200 motion-reduce:transition-none",
-                    expanded && "rotate-180",
+                    "block w-full cursor-pointer rounded-2xl p-3 text-left transition-[filter] hover:brightness-95 focus-visible:outline-2 focus-visible:outline-ring dark:hover:brightness-110",
+                    truncated && "pe-9",
                   )}
-                />
-              </button>
-            ) : null}
+                >
+                  <div key={prompt.id} ref={measureClamp} className="line-clamp-2 break-words">
+                    {label}
+                  </div>
+                </button>
+              )}
+              {truncated || expanded ? (
+                <button
+                  type="button"
+                  aria-label={expanded ? "Collapse prompt" : "Show full prompt"}
+                  aria-expanded={expanded}
+                  onPointerDown={(event) => event.preventDefault()}
+                  onClick={() => setExpandedRowId(expanded ? null : stuckRowId)}
+                  className="absolute end-1.5 bottom-1.5 flex size-6 cursor-pointer items-center justify-center rounded-full text-message-foreground/70 hover:bg-foreground/10 hover:text-message-foreground focus-visible:outline-2 focus-visible:outline-ring"
+                >
+                  <ChevronDownIcon className={cn("size-4", expanded && "rotate-180")} />
+                </button>
+              ) : null}
+            </div>
           </div>
-        </div>
+        ) : null}
       </div>
     </div>
   );

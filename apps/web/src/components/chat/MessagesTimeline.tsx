@@ -10,6 +10,7 @@ import { TimelinePendingApprovalRow } from "./TimelinePendingApprovalRow";
 import type { WorktreeSetupSnapshot } from "@t3tools/contracts";
 import { deriveTimelineMinimapItems } from "./timelineMinimapItems";
 import { FloatingPrompt } from "./FloatingPrompt";
+import { createStickyPromptStore } from "./stickyPromptStore";
 import {
   type AssistantCitation,
   type EnvironmentId,
@@ -814,12 +815,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
         };
   const [minimapHitStripWidth, setMinimapHitStripWidth] = useState(0);
   const [minimapCurrentIndex, setMinimapCurrentIndex] = useState<number | null>(null);
-  // Keeps the last shown prompt while hidden so the exit animation has content.
-  const [floatingPrompt, setFloatingPrompt] = useState<{
-    readonly threadKey: string;
-    readonly itemId: string;
-    readonly visible: boolean;
-  } | null>(null);
+  const [stickyPrompt] = useState(createStickyPromptStore);
   const handleAnchorReady = (info: { anchorIndex: number | undefined }) => {
     if (anchorMessageId !== null && info.anchorIndex !== undefined) {
       onAnchorReady(anchorMessageId, info.anchorIndex);
@@ -867,49 +863,66 @@ const ConversationTimeline = memo(function ConversationTimeline({
   // Runs from the scroll event itself so the push-out tracks the next prompt in the same frame.
   // The list's own visible range lags the scroll event, so rendered prompts are measured directly.
   const syncFloatingPrompt = () => {
+    const zone = floatingPromptZoneRef.current;
     const state = listRef.current?.getState?.();
     const viewport = listRef.current?.getScrollableNode();
-    const zone = floatingPromptZoneRef.current;
-    if (!state || !viewport || !zone || restoringThreadPosition || state.data !== rows) return;
+    if (!zone || !state || !viewport || state.data !== rows) return;
+    if (restoringThreadPosition) {
+      stickyPrompt.set(null);
+      return;
+    }
+    const viewportTop = viewport.getBoundingClientRect().top;
+    const bannerBottom = zone
+      .closest("[data-chat-column]")
+      ?.querySelector(".chat-banner-lane")
+      ?.getBoundingClientRect().bottom;
+    const bannerInset =
+      bannerBottom === undefined || bannerBottom <= viewportTop
+        ? 0
+        : bannerBottom - viewportTop + STICKY_PROMPT_GAP_PX;
+    const zoneInsetTop = bannerInset > 0 ? `${bannerInset}px` : "";
+    if (zone.style.top !== zoneInsetTop) zone.style.top = zoneInsetTop;
     const zoneTop = zone.getBoundingClientRect().top;
-    const line =
-      resolveListScroll(state, viewport) + zoneTop - viewport.getBoundingClientRect().top;
+    const line = resolveListScroll(state, viewport) + zoneTop - viewportTop;
     const promptTop = (index: number) => {
       const row = minimapRowIndices[index]!;
-      const message = state.elementAtIndex(row)?.querySelector("[data-message-role]");
-      return message
-        ? message.getBoundingClientRect().top - zoneTop
+      const anchor = state.elementAtIndex(row)?.querySelector("[data-sticky-prompt-anchor]");
+      return anchor
+        ? anchor.getBoundingClientRect().top - zoneTop
         : state.positionAtIndex(row) - line;
     };
-    // A prompt sticks as soon as its top reaches the line, like a sticky header.
-    const promptIndex = findLastIndex(minimapRowIndices.length, (index) => promptTop(index) < 0);
-    const nextTop =
-      promptIndex + 1 < minimapRowIndices.length ? promptTop(promptIndex + 1) : Infinity;
-    const shown = minimapItems[promptIndex];
-    setFloatingPrompt((current) => {
-      if (shown) {
-        return current?.visible &&
-          current.itemId === shown.id &&
-          current.threadKey === listIdentityKey
-          ? current
-          : { threadKey: listIdentityKey, itemId: shown.id, visible: true };
-      }
-      return current?.visible ? { ...current, visible: false } : current;
-    });
+    // A prompt sticks once its top passes the line. The pixel of slack keeps a prompt that a jump
+    // scrolled exactly onto the line in the timeline.
+    const index = findLastIndex(minimapRowIndices.length, (candidate) => promptTop(candidate) < -1);
+    const stuck = minimapItems[index];
+    stickyPrompt.set(stuck?.id ?? null);
     const layer = zone.firstElementChild;
-    if (shown && layer instanceof HTMLElement) {
-      const bubbleBottom = layer.offsetTop + layer.offsetHeight;
-      // An expanded prompt is being read, so it overlays the next prompt instead of being pushed.
-      const offset =
-        zone.dataset.expanded === "true"
-          ? 0
-          : Math.min(0, nextTop - STICKY_PROMPT_GAP_PX - bubbleBottom);
-      const translate = `0 ${offset}px`;
-      if (layer.style.translate !== translate) layer.style.translate = translate;
-    }
+    if (!stuck || !(layer instanceof HTMLElement)) return;
+    const nextTop = index + 1 < minimapRowIndices.length ? promptTop(index + 1) : Infinity;
+    // An expanded prompt is being read, so it overlays the next prompt instead of being pushed.
+    const offset =
+      zone.dataset.expanded === "true"
+        ? 0
+        : Math.min(0, nextTop - STICKY_PROMPT_GAP_PX - (layer.offsetTop + layer.offsetHeight));
+    const translate = `0 ${offset}px`;
+    if (layer.style.translate !== translate) layer.style.translate = translate;
   };
 
   const syncFloatingPromptStable = useStableCallback(() => syncFloatingPrompt());
+  // Unmounting the pinned copy (feature off, narrow window, no prompts) must unhide its row.
+  const attachFloatingPromptZone = useStableCallback((zone: HTMLDivElement | null) => {
+    floatingPromptZoneRef.current = zone;
+    // Thread banners overlay the top of the timeline, so prompts stick below them.
+    const bannerLane = zone?.closest("[data-chat-column]")?.querySelector(".chat-banner-lane");
+    const stopObservingBanners = bannerLane
+      ? observeResize(bannerLane, syncFloatingPromptStable)
+      : undefined;
+    return () => {
+      stopObservingBanners?.();
+      floatingPromptZoneRef.current = null;
+      stickyPrompt.set(null);
+    };
+  });
 
   const refreshMinimap = useStableCallback(() => {
     const state = listRef.current?.getState?.();
@@ -1116,6 +1129,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     onWorktreeSetupWorkLocally: onWorktreeSetupWorkLocally ?? null,
     onOpenWorktreeSetupTerminal: onOpenWorktreeSetupTerminal ?? null,
     workGroupViewState,
+    stickyPrompt,
   };
   const compactionAwaitingRow =
     isCompacting &&
@@ -1335,13 +1349,6 @@ const ConversationTimeline = memo(function ConversationTimeline({
       viewOffset: 24,
     });
   };
-  const floatingPromptItem =
-    floatingPrompt?.threadKey === listIdentityKey
-      ? minimapItems.find((item) => item.id === floatingPrompt.itemId)
-      : undefined;
-  const floatingPromptRow = floatingPromptItem ? rows[floatingPromptItem.rowIndex] : undefined;
-  const floatingPromptMessage =
-    floatingPromptRow?.kind === "message" ? floatingPromptRow.message : null;
 
   const forwardMinimapWheel = (event: WheelEvent) => {
     const scrollNode = listRef.current?.getScrollableNode();
@@ -1442,20 +1449,15 @@ const ConversationTimeline = memo(function ConversationTimeline({
               onWheel={forwardMinimapWheel}
               onSelect={(item) => scrollToRow(item.rowIndex)}
             />
-            {floatingPromptSupported && minimapItems.length > 0 ? (
+            {floatingPromptSupported && !findActive && minimapItems.length > 0 ? (
               <TimelineRowCtx value={sharedState}>
                 <FloatingPrompt
-                  ref={floatingPromptZoneRef}
+                  ref={attachFloatingPromptZone}
+                  store={stickyPrompt}
+                  prompts={minimapItems}
+                  rows={rows}
                   belowTopFade={topFadeEnabled}
-                  message={floatingPromptMessage}
-                  visible={
-                    floatingPromptItem !== undefined &&
-                    floatingPrompt?.visible === true &&
-                    !restoringThreadPosition
-                  }
-                  onSelect={() => {
-                    if (floatingPromptItem) scrollToRow(floatingPromptItem.rowIndex);
-                  }}
+                  onSelect={scrollToRow}
                   onLayoutChange={syncFloatingPromptStable}
                 />
               </TimelineRowCtx>
