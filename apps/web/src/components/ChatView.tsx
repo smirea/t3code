@@ -134,6 +134,7 @@ import {
   derivePhase,
   deriveActiveWorkStartedAt,
   deriveCanInterruptRunningThread,
+  deriveLeadingPrompt,
   findLatestProposedPlan,
   findRevertCheckpoint,
   hasActionableProposedPlan,
@@ -1531,6 +1532,14 @@ export default function ChatView(props: ChatViewProps) {
   // ChatView's own entries (anchoring, rewind, prompt history); ThreadTimeline
   // renders every row from the live turn items.
   const serverTimelineRows = serverVisibleTurnItems.filter(isCompleteTurnItemRow);
+  const leadingPrompt =
+    serverProjection === null
+      ? null
+      : deriveLeadingPrompt({
+          messages: serverProjection.messages,
+          visibleTurnItems: serverTimelineRows,
+          hasMoreHistory: serverThreadHistory.hasMoreHistory,
+        });
   const hasStreamedTimelineRows =
     isServerThread && serverTimelineRows.length !== serverVisibleTurnItems.length;
   const serverTimelineEntries = useIncrementalTimelineEntries(activeThreadKey, {
@@ -3394,6 +3403,7 @@ export default function ChatView(props: ChatViewProps) {
                   onRespondToApproval={onRespondToApprovalStable}
                   canOperateThread={canOperateThread}
                   threadDetailRef={routeThreadDetailRef}
+                  leadingPrompt={leadingPrompt}
                   entriesInput={timelineEntriesInput}
                   draftEntries={isServerThread ? null : draftTimelineEntries}
                   activeThreadKey={activeThreadKey}

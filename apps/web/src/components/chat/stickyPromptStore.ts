@@ -1,5 +1,8 @@
 import { useSyncExternalStore } from "react";
 
+/** Pins the prompt of the turn the loaded history opens inside, which has no row of its own. */
+export const LEADING_PROMPT_ROW_ID = "sticky-prompt:leading";
+
 /** The prompt pinned under the sticky line, and the width of its bubble in the timeline. */
 export interface StickyPrompt {
   readonly rowId: string;

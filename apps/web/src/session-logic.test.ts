@@ -24,6 +24,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   deriveCanInterruptRunningThread,
+  deriveLeadingPrompt,
   deriveTimelineEntriesFromVisibleTurnItems,
   deriveTimelineEntriesFromVisibleTurnItemsWithState,
   deriveRevertTurnCountByUserMessageId,
@@ -1786,4 +1787,106 @@ it("renders automatic completion as a work entry instead of a user bubble", () =
       ],
     })[0]?.kind,
   ).toBe("message");
+});
+
+describe("deriveLeadingPrompt", () => {
+  const threadId = ThreadId.make("thread-leading");
+  const at = (second: number) =>
+    DateTime.makeUnsafe(`2026-08-29T00:00:${String(second).padStart(2, "0")}Z`);
+  const message = (id: string, second: number, createdBy: "user" | "agent" = "user") =>
+    ({
+      id: MessageId.make(id),
+      threadId,
+      runId: null,
+      nodeId: null,
+      role: "user",
+      text: `${id} text`,
+      attachments: [],
+      streaming: false,
+      createdBy,
+      creationSource: "web",
+      createdAt: at(second),
+      updatedAt: at(second),
+    }) as const;
+  const row = (id: string, second: number, type: "assistant_message" | "user_message") => {
+    const common = {
+      id: TurnItemId.make(`item-${id}`),
+      threadId,
+      runId: RunId.make("run-1"),
+      nodeId: null,
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: second,
+      status: "completed" as const,
+      title: null,
+      startedAt: at(second),
+      completedAt: at(second),
+      updatedAt: at(second),
+      messageId: MessageId.make(id),
+      text: id,
+    };
+    const item: OrchestrationV2TurnItem =
+      type === "user_message"
+        ? {
+            ...common,
+            type,
+            inputIntent: "turn_start",
+            attachments: [],
+            createdBy: "user",
+            creationSource: "web",
+          }
+        : { ...common, type, streaming: false };
+    return {
+      position: second,
+      visibility: "local" as const,
+      sourceThreadId: threadId,
+      sourceItemId: item.id,
+      item,
+    };
+  };
+
+  it("picks the user's latest prompt before a window that opens inside a reply", () => {
+    const leading = deriveLeadingPrompt({
+      hasMoreHistory: true,
+      visibleTurnItems: [row("reply", 20, "assistant_message")],
+      messages: [
+        message("older", 5),
+        message("prompt", 10),
+        message("from-agent", 15, "agent"),
+        message("queued", 30),
+      ],
+    });
+    expect(leading?.id).toBe("prompt");
+    expect(leading?.text).toBe("prompt text");
+  });
+
+  it("finds nothing when the window starts with a prompt, holds the prompt, or is complete", () => {
+    const messages = [message("prompt", 10)];
+    expect(
+      deriveLeadingPrompt({
+        hasMoreHistory: true,
+        visibleTurnItems: [row("next", 20, "user_message")],
+        messages,
+      }),
+    ).toBeNull();
+    expect(
+      deriveLeadingPrompt({
+        hasMoreHistory: true,
+        visibleTurnItems: [
+          row("reply", 20, "assistant_message"),
+          row("prompt", 21, "user_message"),
+        ],
+        messages,
+      }),
+    ).toBeNull();
+    expect(
+      deriveLeadingPrompt({
+        hasMoreHistory: false,
+        visibleTurnItems: [row("reply", 20, "assistant_message")],
+        messages,
+      }),
+    ).toBeNull();
+  });
 });

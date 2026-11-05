@@ -307,6 +307,74 @@ describe("threadHistoryPaging", () => {
     );
   });
 
+  it("keeps the prompt of a turn the window opens inside, and no other prompt", () => {
+    const promptRow = (index: number, messageId: string): OrchestrationV2ProjectedTurnItem => {
+      const row = makeRow(index);
+      if (row.item.type !== "command_execution") throw new Error("Expected command fixture");
+      return {
+        ...row,
+        item: {
+          ...row.item,
+          type: "user_message",
+          createdBy: "user",
+          creationSource: "web",
+          inputIntent: "turn_start",
+          messageId: MessageId.make(messageId),
+          text: messageId,
+          attachments: [],
+        },
+      };
+    };
+    const message = (id: string, secondsBefore = 0) => ({
+      id: MessageId.make(id),
+      role: "user",
+      runId: null,
+      createdBy: "user",
+      createdAt: DateTime.subtract(NOW, { seconds: secondsBefore }),
+    });
+    const withPrompts = (rows: OrchestrationV2ProjectedTurnItem[]) => ({
+      ...makeProjection(rows),
+      messages: [message("old-prompt"), message("long-prompt")],
+    });
+    const longTurn = [
+      promptRow(0, "old-prompt"),
+      makeRow(1),
+      promptRow(2, "long-prompt"),
+      ...Array.from({ length: 12 }, (_, offset) => makeRow(3 + offset, { outputBytes: 200_000 })),
+    ];
+    const inside = buildBoundedThreadProjection({
+      projection: withPrompts(longTurn) as unknown as Parameters<
+        typeof buildBoundedThreadProjection
+      >[0]["projection"],
+      snapshotSequence: 1,
+    });
+    expect(inside.hasMoreHistory).toBe(true);
+    expect(inside.projection.visibleTurnItems[0]!.item.type).toBe("command_execution");
+    expect(inside.projection.messages.map((kept) => String(kept.id))).toEqual(["long-prompt"]);
+
+    // A window loaded from inside the turn has no prompt row; the prompt's message still dates it.
+    const fromInside = buildBoundedThreadProjection({
+      projection: {
+        ...makeProjection(longTurn.slice(3)),
+        messages: [message("old-prompt", 2), message("long-prompt", 1), message("queued", -5)],
+      } as unknown as Parameters<typeof buildBoundedThreadProjection>[0]["projection"],
+      snapshotSequence: 1,
+    });
+    expect(fromInside.projection.messages.map((kept) => String(kept.id))).toEqual(["long-prompt"]);
+
+    const whole = buildBoundedThreadProjection({
+      projection: withPrompts(longTurn.slice(0, 4)) as unknown as Parameters<
+        typeof buildBoundedThreadProjection
+      >[0]["projection"],
+      snapshotSequence: 1,
+    });
+    expect(whole.hasMoreHistory).toBe(false);
+    expect(whole.projection.messages.map((kept) => String(kept.id))).toEqual([
+      "old-prompt",
+      "long-prompt",
+    ]);
+  });
+
   it("keeps background turns with user turns, with main's 150-turn fan-out ceiling", () => {
     const items = Array.from({ length: 161 }, (_, turn) => {
       const row = makeRow(turn * 2);

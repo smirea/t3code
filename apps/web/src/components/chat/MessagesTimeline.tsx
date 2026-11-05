@@ -9,8 +9,8 @@ import { WorkLogBlock } from "./WorkLog";
 import { TimelinePendingApprovalRow } from "./TimelinePendingApprovalRow";
 import type { WorktreeSetupSnapshot } from "@t3tools/contracts";
 import { deriveTimelineMinimapItems } from "./timelineMinimapItems";
-import { FloatingPrompt } from "./FloatingPrompt";
-import { createStickyPromptStore } from "./stickyPromptStore";
+import { FloatingPrompt, LeadingPromptPreview } from "./FloatingPrompt";
+import { createStickyPromptStore, LEADING_PROMPT_ROW_ID } from "./stickyPromptStore";
 import {
   type AssistantCitation,
   type EnvironmentId,
@@ -54,7 +54,7 @@ import {
 } from "@legendapp/list/react";
 import { type PendingApproval, type TimelineEntry } from "../../session-logic";
 import type { CodexArtifactTemplate } from "@t3tools/shared/codexArtifactTemplates";
-import { type ChatFileAttachment, type TurnDiffSummary } from "../../types";
+import { type ChatFileAttachment, type ChatMessage, type TurnDiffSummary } from "../../types";
 import {
   ArrowRightIcon,
   BotIcon,
@@ -314,6 +314,8 @@ interface MessagesTimelineProps {
   emptyPlaceholderInset: number;
   topFadeEnabled?: boolean;
   historyControls?: MessagesTimelineHistoryControls | undefined;
+  /** The prompt of the turn the loaded history opens inside, when no loaded row holds it. */
+  leadingPrompt?: ChatMessage | null;
   findExpanded?: boolean;
   findQuery?: string;
   activeFindMatch?: ThreadFindMatch | null;
@@ -408,6 +410,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   emptyPlaceholderInset,
   topFadeEnabled = false,
   historyControls,
+  leadingPrompt = null,
 }: MessagesTimelineProps) {
   const listIdentityKey = displayThreadKey ?? routeThreadKey;
   // Snapshot restore positions on identity changes; ongoing scroll writes must not move them.
@@ -846,6 +849,12 @@ const ConversationTimeline = memo(function ConversationTimeline({
 
   const floatingPromptZoneRef = useRef<HTMLDivElement | null>(null);
   const bannerLaneRef = useRef<Element | null>(null);
+  // A clicked leading prompt is loaded first; the sync that sees its row lands on it.
+  const leadingJumpRef = useRef<string | null>(null);
+  const loadAndJumpToLeadingPrompt = (message: ChatMessage) => {
+    leadingJumpRef.current = message.id;
+    historyControls?.onLoadEarlier(message.id);
+  };
   // Runs from the scroll event itself so the push-out tracks the next prompt in the same frame.
   const syncFloatingPrompt = () => {
     const zone = floatingPromptZoneRef.current;
@@ -860,6 +869,19 @@ const ConversationTimeline = memo(function ConversationTimeline({
     const zoneTop = `${lineInset}px`;
     if (zone.style.top !== zoneTop) zone.style.top = zoneTop;
     const line = viewportTop + lineInset;
+    const leadingJumpIndex =
+      leadingJumpRef.current === null
+        ? -1
+        : rows.findIndex((row) => row.id === leadingJumpRef.current);
+    if (leadingJumpIndex >= 0) {
+      leadingJumpRef.current = null;
+      navigateTimeline();
+      void listRef.current?.scrollToIndex({
+        index: leadingJumpIndex,
+        animated: !window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+        viewOffset: lineInset + 24,
+      });
+    }
     // Painted rows only: LegendList moves its row indices before it redraws recycled containers,
     // so a container fetched by index must still be showing that row to count.
     const paintedRow = (index: number) => {
@@ -901,22 +923,33 @@ const ConversationTimeline = memo(function ConversationTimeline({
       const own = anchorRect(index);
       if (own && own.top >= line) index -= 1;
     }
-    const stuck = minimapItems[index];
+    // Rows above the first loaded prompt belong to the turn of the prompt history has not loaded,
+    // which the list header shows until it scrolls past the line.
+    const leadingAnchor =
+      leadingPrompt === null
+        ? undefined
+        : viewport.querySelector("[data-leading-prompt-anchor]")?.getBoundingClientRect();
+    const stuckId =
+      minimapItems[index]?.id ??
+      (leadingPrompt !== null &&
+      (rowAtLine !== undefined || (leadingAnchor !== undefined && leadingAnchor.top < line))
+        ? LEADING_PROMPT_ROW_ID
+        : undefined);
     // A banner leaves content showing through and around it, which would show a stuck row twice.
     const viewportMask =
-      stuck && lineInset > 0
+      stuckId !== undefined && lineInset > 0
         ? `linear-gradient(to bottom, transparent ${lineInset}px, #000 ${lineInset}px)`
         : "";
     if (viewport.style.maskImage !== viewportMask) viewport.style.maskImage = viewportMask;
-    if (!stuck) {
+    if (stuckId === undefined) {
       stickyPrompt.set(null);
       return;
     }
-    const anchorWidth = anchorRect(index)?.width;
+    const anchorWidth = index >= 0 ? anchorRect(index)?.width : leadingAnchor?.width;
     const previous = stickyPrompt.get();
     stickyPrompt.set({
-      rowId: stuck.id,
-      width: anchorWidth ?? (previous?.rowId === stuck.id ? previous.width : null),
+      rowId: stuckId,
+      width: anchorWidth ?? (previous?.rowId === stuckId ? previous.width : null),
     });
     const layer = zone.querySelector<HTMLElement>("[data-pinned-prompt-layer]");
     if (!layer) return;
@@ -1247,6 +1280,9 @@ const ConversationTimeline = memo(function ConversationTimeline({
     <>
       {parentThreadLink === null ? listHeaderLeadingContent : null}
       {historyControls ? <TimelineHistoryControl {...historyControls} /> : null}
+      {stickyPromptsEnabled && leadingPrompt !== null ? (
+        <LeadingPromptPreview message={leadingPrompt} onSelect={loadAndJumpToLeadingPrompt} />
+      ) : null}
       {parentThreadLink !== null ? listHeaderLeadingContent : null}
     </>
   );
@@ -1511,13 +1547,17 @@ const ConversationTimeline = memo(function ConversationTimeline({
               onWheel={forwardMinimapWheel}
               onSelect={(item) => scrollToRow(item.rowIndex)}
             />
-            {floatingPromptSupported && !findActive && minimapItems.length > 0 ? (
+            {floatingPromptSupported &&
+            !findActive &&
+            (minimapItems.length > 0 || leadingPrompt !== null) ? (
               <TimelineRowCtx value={sharedState}>
                 <FloatingPrompt
                   ref={attachFloatingPromptZone}
                   store={stickyPrompt}
                   prompts={minimapItems}
                   rows={rows}
+                  leadingPrompt={leadingPrompt}
+                  onSelectLeading={loadAndJumpToLeadingPrompt}
                   resyncKey={`${listIdentityKey}:${restoringThreadPosition ? "restoring" : "shown"}`}
                   onSelect={jumpToPinnedPrompt}
                   onResync={syncFloatingPromptStable}

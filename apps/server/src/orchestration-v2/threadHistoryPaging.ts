@@ -5,6 +5,7 @@ import type {
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 
 /**
  * Every window stops at the byte budget. A window that holds a user turn also
@@ -557,11 +558,44 @@ function localTurnItemsForVisibleWindow(
   return visible.filter((row) => isLocalProjectedRow(projection, row)).map((row) => row.item);
 }
 
+/**
+ * The prompt of the turn a window opens inside: the last user turn before its first row. A
+ * window inside one long reply has no prompt of its own, and clients pin this one instead.
+ * When the loaded rows stop inside that turn too, its message still identifies it by time.
+ */
+function leadingPromptMessageId(
+  projection: OrchestrationV2ThreadProjection,
+  windowItems: ReadonlyArray<OrchestrationV2ProjectedTurnItem>,
+): string | undefined {
+  const first = windowItems[0];
+  if (first === undefined || isThreadHistoryUserTurn(first.item)) return undefined;
+  const visible = projection.visibleTurnItems;
+  const start = visible.findIndex(
+    (row) => row.sourceThreadId === first.sourceThreadId && row.sourceItemId === first.sourceItemId,
+  );
+  for (let index = start - 1; index >= 0; index -= 1) {
+    const item = visible[index]!.item;
+    if (isThreadHistoryUserTurn(item) && item.type === "user_message")
+      return String(item.messageId);
+  }
+  const cutoff = DateTime.toEpochMillis(first.item.startedAt ?? first.item.updatedAt);
+  let leading: OrchestrationV2ThreadProjection["messages"][number] | undefined;
+  for (const message of projection.messages) {
+    if (message.role !== "user" || message.createdBy !== "user") continue;
+    const createdAt = DateTime.toEpochMillis(message.createdAt);
+    if (createdAt <= cutoff && (!leading || createdAt > DateTime.toEpochMillis(leading.createdAt)))
+      leading = message;
+  }
+  return leading === undefined ? undefined : String(leading.id);
+}
+
 function messagesForBoundedProjection(
   projection: OrchestrationV2ThreadProjection,
   turnItems: ReadonlyArray<OrchestrationV2TurnItem>,
+  leadingPromptId: string | undefined,
 ): OrchestrationV2ThreadProjection["messages"] {
   const retainedMessageIds = new Set<string>();
+  if (leadingPromptId !== undefined) retainedMessageIds.add(leadingPromptId);
   for (const item of turnItems) {
     if ("messageId" in item) {
       retainedMessageIds.add(String(item.messageId));
@@ -741,7 +775,11 @@ export function buildBoundedThreadProjection(input: {
     ...controlProjection,
     plans,
     contextHandoffs,
-    messages: messagesForBoundedProjection(controlProjection, turnItems),
+    messages: messagesForBoundedProjection(
+      controlProjection,
+      turnItems,
+      leadingPromptMessageId(controlProjection, window.items),
+    ),
     turnItems,
     visibleTurnItems,
   };

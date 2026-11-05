@@ -3,6 +3,7 @@ import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/mod
 import {
   type AssetResource,
   type OrchestrationV2Checkpoint,
+  type OrchestrationV2ConversationMessage,
   type OrchestrationV2ExecutionNode,
   type OrchestrationV2PlanArtifact,
   type OrchestrationV2ProjectedTurnItem,
@@ -562,6 +563,51 @@ export interface TimelineEntriesInput {
 export interface TimelineEntriesProjection {
   readonly input: TimelineEntriesInput;
   readonly entries: TimelineEntry[];
+}
+
+/**
+ * The user's prompt for the turn a history window opens inside, when that window loaded no
+ * prompt of its own (one long reply, or replies to background work). The server keeps that
+ * prompt's message alongside the window; a queued prompt is newer than the window, so the
+ * cutoff at the first loaded row leaves it out.
+ */
+export function deriveLeadingPrompt(input: {
+  readonly messages: ReadonlyArray<OrchestrationV2ConversationMessage>;
+  readonly visibleTurnItems: ReadonlyArray<OrchestrationV2ProjectedTurnItem>;
+  readonly hasMoreHistory: boolean;
+}): ChatMessage | null {
+  const first = input.visibleTurnItems[0];
+  if (!input.hasMoreHistory || first === undefined) return null;
+  if (first.item.type === "user_message" && first.item.createdBy === "user") return null;
+  const loaded = new Set<string>();
+  for (const row of input.visibleTurnItems) {
+    if (row.item.type === "user_message") loaded.add(row.item.messageId);
+  }
+  const cutoff = DateTime.toEpochMillis(first.item.startedAt ?? first.item.updatedAt);
+  let leading: OrchestrationV2ConversationMessage | undefined;
+  for (const message of input.messages) {
+    if (message.role !== "user" || message.createdBy !== "user" || loaded.has(message.id)) continue;
+    const createdAt = DateTime.toEpochMillis(message.createdAt);
+    if (createdAt > cutoff) continue;
+    if (!leading || createdAt > DateTime.toEpochMillis(leading.createdAt)) leading = message;
+  }
+  if (!leading) return null;
+  return {
+    id: leading.id,
+    role: "user",
+    text: leading.text,
+    ...(leading.context ? { context: leading.context } : {}),
+    ...(leading.attachments.length > 0 ? { attachments: leading.attachments } : {}),
+    runId: leading.runId,
+    streaming: false,
+    createdBy: leading.createdBy,
+    creationSource: leading.creationSource,
+    ...(leading.senderThreadId !== undefined ? { senderThreadId: leading.senderThreadId } : {}),
+    ...(leading.scheduledTaskId !== undefined ? { scheduledTaskId: leading.scheduledTaskId } : {}),
+    createdAt: DateTime.formatIso(leading.createdAt),
+    updatedAt: DateTime.formatIso(leading.updatedAt),
+    inputIntent: "turn_start",
+  };
 }
 
 export function deriveTimelineEntriesFromVisibleTurnItems(

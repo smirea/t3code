@@ -3591,6 +3591,18 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                       WHERE thread_id = ${threadId}
                         AND status IN ('queued', 'preparing', 'starting', 'running', 'waiting')
                     )
+                    -- A window inside one long turn holds none of its prompt; bounded snapshots
+                    -- send that prompt for clients to pin.
+                    OR message.message_id = (
+                      SELECT json_extract(prompt.payload_json, '$.messageId')
+                      FROM orchestration_v2_projection_turn_items AS prompt
+                      WHERE prompt.thread_id = ${threadId}
+                        AND prompt.type = 'user_message'
+                        AND json_extract(prompt.payload_json, '$.createdBy') = 'user'
+                        AND json_extract(prompt.payload_json, '$.inputIntent') IN ('turn_start', 'queued_turn')
+                      ORDER BY prompt.ordinal DESC
+                      LIMIT 1
+                    )
                   )
                 ORDER BY created_at ASC, message_id ASC
               `,

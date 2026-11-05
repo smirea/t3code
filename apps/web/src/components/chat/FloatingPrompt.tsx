@@ -2,8 +2,13 @@ import { ChevronDownIcon, ImageIcon } from "lucide-react";
 import { useState, type Ref } from "react";
 
 import { cn } from "~/lib/utils";
+import type { ChatMessage } from "../../types";
 import type { MessagesTimelineRow } from "./MessagesTimeline.logic";
-import { useStickyPrompt, type StickyPromptStore } from "./stickyPromptStore";
+import {
+  LEADING_PROMPT_ROW_ID,
+  useStickyPrompt,
+  type StickyPromptStore,
+} from "./stickyPromptStore";
 import type { TimelineMinimapItem } from "./timelineMinimapItems";
 import {
   PinnedPromptPill,
@@ -44,8 +49,10 @@ export function FloatingPrompt({
   store,
   prompts,
   rows,
+  leadingPrompt,
   resyncKey,
   onSelect,
+  onSelectLeading,
   onResync,
   onWheel,
 }: {
@@ -53,9 +60,12 @@ export function FloatingPrompt({
   readonly store: StickyPromptStore;
   readonly prompts: ReadonlyArray<TimelineMinimapItem>;
   readonly rows: ReadonlyArray<MessagesTimelineRow>;
+  /** The prompt of the turn the loaded history opens inside, which has no row yet. */
+  readonly leadingPrompt: ChatMessage | null;
   /** A change remeasures once its render commits, such as a restored thread position landing. */
   readonly resyncKey: string;
   readonly onSelect: (rowIndex: number) => void;
+  readonly onSelectLeading: (message: ChatMessage) => void;
   readonly onResync: () => void;
   /** The collapsed copy sits over the timeline, so wheeling on it scrolls the timeline. */
   readonly onWheel: (event: WheelEvent) => void;
@@ -63,7 +73,12 @@ export function FloatingPrompt({
   const pinned = useStickyPrompt(store);
   const prompt = pinned ? prompts.find((item) => item.id === pinned.rowId) : undefined;
   const row = prompt ? rows[prompt.rowIndex] : undefined;
-  const message = row?.kind === "message" ? row.message : undefined;
+  const message =
+    pinned?.rowId === LEADING_PROMPT_ROW_ID
+      ? (leadingPrompt ?? undefined)
+      : row?.kind === "message"
+        ? row.message
+        : undefined;
   const [expandedRowId, setExpandedRowId] = useState<string | null>(null);
   if (expandedRowId !== null && expandedRowId !== pinned?.rowId) setExpandedRowId(null);
   const expanded = message !== undefined && expandedRowId === pinned?.rowId;
@@ -105,7 +120,7 @@ export function FloatingPrompt({
     >
       <span hidden key={resyncKey} ref={resync} />
       <div data-pinned-prompt-layer="" className="chat-composer-lane absolute inset-x-0 top-0">
-        {look && message && prompt ? (
+        {look && message && pinned ? (
           <div className="chat-content-lane flex justify-end">
             <div
               ref={forwardWheel}
@@ -138,7 +153,8 @@ export function FloatingPrompt({
                   onClick={(event) => {
                     // The copy changes once the timeline lands on its prompt; focus must not stay.
                     event.currentTarget.blur();
-                    onSelect(prompt.rowIndex);
+                    if (prompt) onSelect(prompt.rowIndex);
+                    else onSelectLeading(message);
                   }}
                   // Cut copies end on the boundary of the row's third line, so it shows whole below.
                   className="block w-full cursor-pointer rounded-2xl p-3 text-start transition-[filter] group-data-[truncated=true]/pinned:pb-0 hover:brightness-95 focus-visible:outline-2 focus-visible:outline-ring dark:hover:brightness-110"
@@ -150,7 +166,7 @@ export function FloatingPrompt({
                     </span>
                   ) : (
                     <div
-                      key={prompt.id}
+                      key={pinned.rowId}
                       ref={clampToTwoLines}
                       className="overflow-hidden break-words"
                     >
@@ -189,6 +205,54 @@ export function FloatingPrompt({
             </div>
           </div>
         ) : null}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The prompt of the turn the loaded history opens inside, shown where it belongs: above the
+ * loaded rows. Its text has loaded, its row has not; clicking it loads history through it.
+ */
+export function LeadingPromptPreview({
+  message,
+  onSelect,
+}: {
+  readonly message: ChatMessage;
+  readonly onSelect: (message: ChatMessage) => void;
+}) {
+  const look = resolvePinnedPromptLook(message);
+  if (look.kind !== "bubble") return null;
+  const clampToTwoLines = (element: HTMLDivElement | null) => {
+    if (!element) return;
+    // oxlint-disable-next-line t3code/no-raw-resize-observer -- writes DOM only, never React state; observeResize's flush would pull unrelated pending renders into the frame
+    const observer = new ResizeObserver(() => {
+      const cut = twoLineCut(element);
+      const maxHeight = cut === null ? "" : `${cut}px`;
+      if (element.style.maxHeight !== maxHeight) element.style.maxHeight = maxHeight;
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  };
+  return (
+    <div className="messages-timeline-row-frame pb-4">
+      <div className="chat-content-lane flex justify-end">
+        <button
+          type="button"
+          data-leading-prompt-anchor=""
+          dir={look.dir}
+          aria-label={`Load prompt: ${look.label}`}
+          onClick={() => onSelect(message)}
+          className="min-w-0 max-w-[80%] cursor-pointer rounded-2xl bg-message p-3 text-start text-message-foreground text-sm leading-relaxed transition-[filter] hover:brightness-95 focus-visible:outline-2 focus-visible:outline-ring dark:hover:brightness-110"
+        >
+          <div key={message.id} ref={clampToTwoLines} className="overflow-hidden break-words">
+            {look.paragraphs.map((paragraph) => (
+              <p key={paragraph.key} className="whitespace-pre-line [&+&]:mt-[0.65rem]">
+                {paragraph.text}
+              </p>
+            ))}
+          </div>
+        </button>
       </div>
     </div>
   );
