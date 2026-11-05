@@ -9,7 +9,7 @@ import { WorkLogBlock } from "./WorkLog";
 import { TimelinePendingApprovalRow } from "./TimelinePendingApprovalRow";
 import type { WorktreeSetupSnapshot } from "@t3tools/contracts";
 import { deriveTimelineMinimapItems } from "./timelineMinimapItems";
-import { FloatingPrompt, LeadingPromptPreview } from "./FloatingPrompt";
+import { FloatingPrompt, LeadingPromptPreview, sizePromptCard } from "./FloatingPrompt";
 import { createStickyPromptStore, LEADING_PROMPT_ROW_ID } from "./stickyPromptStore";
 import {
   type AssistantCitation,
@@ -910,13 +910,12 @@ const ConversationTimeline = memo(function ConversationTimeline({
         rowAtLineTop = top;
       }
     }
-    const anchorRect = (index: number) => {
+    const anchorElement = (index: number) => {
       const rowIndex = minimapRowIndices[index];
       if (rowIndex === undefined) return undefined;
-      return paintedRow(rowIndex)
-        ?.querySelector("[data-sticky-prompt-anchor]")
-        ?.getBoundingClientRect();
+      return paintedRow(rowIndex)?.querySelector<HTMLElement>("[data-sticky-prompt-anchor]");
     };
+    const anchorRect = (index: number) => anchorElement(index)?.getBoundingClientRect();
     let index = rowAtLine === undefined ? -1 : findLastAtOrBefore(minimapRowIndices, rowAtLine);
     // The row at the line can be the prompt's own row with its bubble still below the line.
     if (index >= 0 && minimapRowIndices[index] === rowAtLine) {
@@ -955,25 +954,17 @@ const ConversationTimeline = memo(function ConversationTimeline({
     if (!layer) return;
     const expanded = zone.dataset.expanded === "true";
     const card = layer.querySelector<HTMLElement>("[data-pinned-prompt-card]");
-    let cardHeight: number | undefined;
-    if (card?.dataset.natural !== undefined && !expanded) {
-      // The copy covers what is left of its row below the line, so the row never shows twice,
-      // and shrinks with it until only two lines are left.
-      const natural = Number(card.dataset.natural);
-      const target = Number(card.dataset.target);
-      const rowBottom = (index >= 0 ? anchorRect(index)?.bottom : leadingAnchor?.bottom) ?? line;
-      const covered = Math.max(0, rowBottom - line);
-      cardHeight = Math.max(target, covered);
-      const height = `${cardHeight}px`;
-      if (card.style.height !== height) card.style.height = height;
-      const truncated = natural > cardHeight + 0.5 ? "true" : "false";
-      if (card.dataset.truncated !== truncated) card.dataset.truncated = truncated;
-      const floating = cardHeight > covered + 0.5 ? "true" : "false";
-      if (card.dataset.floating !== floating) card.dataset.floating = floating;
-    } else if (card?.dataset.natural !== undefined) {
-      if (card.style.height !== "") card.style.height = "";
-      if (card.dataset.floating !== "true") card.dataset.floating = "true";
-    }
+    const stuckAnchor =
+      index >= 0
+        ? anchorElement(index)
+        : viewport.querySelector<HTMLElement>("[data-leading-prompt-anchor]");
+    const collapsedBody = stuckAnchor?.querySelector('[data-user-message-collapsed="true"]');
+    const cardHeight = card
+      ? sizePromptCard(card, {
+          covered: stuckAnchor ? Math.max(0, stuckAnchor.getBoundingClientRect().bottom - line) : 0,
+          cap: collapsedBody ? collapsedBody.getBoundingClientRect().height : Infinity,
+        })
+      : undefined;
     const nextTop = (anchorRect(index + 1)?.top ?? Infinity) - line;
     // An expanded prompt is being read, so it overlays the next prompt instead of being pushed.
     const offset = expanded

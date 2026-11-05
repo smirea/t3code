@@ -42,10 +42,41 @@ function twoLineCut(element: HTMLElement): number | null {
 }
 
 /**
- * A prompt drawn like its timeline bubble: the row's markdown, fade and "Show full message"
- * footer. Its height is set from outside; the body clips to whatever the footer leaves of it.
- * Measuring writes `natural` (the whole prompt) and `target` (two lines and the footer) onto the
- * card, so a scroll frame sizes it without reading layout.
+ * Sizes a card per scroll frame without reading layout. It covers `covered`, what is left of its
+ * row below the line, so the row never shows twice; `cap` is what a collapsed row shows. Shrinking,
+ * its bottom edge first rises through the footer space, then clips the content to two lines.
+ */
+export function sizePromptCard(
+  card: HTMLElement,
+  { covered, cap }: { readonly covered: number; readonly cap: number },
+): number | undefined {
+  const body = card.querySelector<HTMLElement>("[data-pinned-prompt-body]");
+  if (card.dataset.content === undefined || !body) return undefined;
+  if (card.dataset.expanded === "true") {
+    if (card.style.height !== "") card.style.height = "";
+    if (body.style.height !== "") body.style.height = "";
+    if (card.dataset.floating !== "true") card.dataset.floating = "true";
+    return undefined;
+  }
+  const content = Number(card.dataset.content);
+  const padding = Number(card.dataset.padding);
+  const height = Math.max(Number(card.dataset.target), covered);
+  const shown = Math.min(cap, content, height - padding);
+  const cardHeight = `${height}px`;
+  if (card.style.height !== cardHeight) card.style.height = cardHeight;
+  const bodyHeight = `${shown}px`;
+  if (body.style.height !== bodyHeight) body.style.height = bodyHeight;
+  const truncated = content > shown + 0.5 ? "true" : "false";
+  if (card.dataset.truncated !== truncated) card.dataset.truncated = truncated;
+  const floating = height > covered + 0.5 ? "true" : "false";
+  if (card.dataset.floating !== floating) card.dataset.floating = floating;
+  return height;
+}
+
+/**
+ * A prompt drawn like its timeline bubble: the row's markdown and fade, with "Show full message"
+ * tucked into the bottom corner. Its size is set by `sizePromptCard`; measuring writes the
+ * prompt's height and its two-line height onto the card for it.
  */
 function PromptCard({
   message,
@@ -77,23 +108,34 @@ function PromptCard({
   };
   const measure = (content: HTMLDivElement | null) => {
     const card = content?.closest<HTMLElement>("[data-pinned-prompt-card]");
-    const footer = card?.querySelector<HTMLElement>("[data-pinned-prompt-footer]");
-    if (!content || !card || !footer) return;
+    if (!content || !card) return;
     // oxlint-disable-next-line t3code/no-raw-resize-observer -- writes DOM only, never React state; observeResize's flush would pull unrelated pending renders into every hand-off frame
     const observer = new ResizeObserver(() => {
       const cardStyle = getComputedStyle(card);
       const padding = parseFloat(cardStyle.paddingTop) + parseFloat(cardStyle.paddingBottom);
-      const natural = content.offsetHeight + padding;
+      const height = content.offsetHeight;
       const cut = twoLineCut(content);
-      const footerHeight = footer.offsetHeight + parseFloat(getComputedStyle(footer).marginTop);
-      const target = cut === null ? natural : Math.min(natural, padding + cut + footerHeight);
-      card.dataset.natural = String(natural);
-      card.dataset.target = String(target);
+      card.dataset.content = String(height);
+      card.dataset.padding = String(padding);
+      card.dataset.target = String(padding + (cut ?? height));
       onMeasured(card);
     });
     observer.observe(content);
     return () => observer.disconnect();
   };
+  const toggle = (
+    <Button
+      type="button"
+      size="xs"
+      variant="ghost-muted"
+      aria-expanded={expanded}
+      onPointerDown={(event) => event.preventDefault()}
+      onClick={onToggleExpanded}
+      className="-ml-1"
+    >
+      {expanded ? "Show less" : "Show full message"}
+    </Button>
+  );
   return (
     <div
       ref={forwardWheel}
@@ -104,59 +146,49 @@ function PromptCard({
       dir={look.dir}
       style={style}
       className={cn(
-        "group/pinned pointer-events-auto relative flex min-w-0 flex-col overflow-hidden rounded-2xl bg-message p-3 text-message-foreground",
-        "data-[expanded=true]:max-h-[50vh] data-[floating=true]:shadow-md data-[floating=true]:shadow-black/10 data-[floating=true]:ring-1 data-[floating=true]:ring-black/5 dark:data-[floating=true]:shadow-black/60 dark:data-[floating=true]:ring-white/15",
+        "group/pinned pointer-events-auto relative min-w-0 overflow-hidden rounded-2xl bg-message p-3 text-message-foreground",
+        "data-[expanded=true]:flex data-[expanded=true]:max-h-[50vh] data-[expanded=true]:flex-col data-[floating=true]:shadow-md data-[floating=true]:shadow-black/10 data-[floating=true]:ring-1 data-[floating=true]:ring-black/5 dark:data-[floating=true]:shadow-black/60 dark:data-[floating=true]:ring-white/15",
         BUBBLE_CHIP_CLASS_NAME,
         className,
       )}
     >
       <div
-        className={cn(
-          "min-h-0 flex-1",
+        data-pinned-prompt-body=""
+        className={
           expanded
-            ? "overflow-y-auto overscroll-contain"
+            ? "min-h-0 flex-1 overflow-y-auto overscroll-contain"
             : // The row's collapsed fade, shortened on a two-line copy so its last line stays readable.
-              "overflow-hidden group-data-[truncated=true]/pinned:[mask-image:linear-gradient(to_bottom,#000_calc(100%_-_min(1.75rem,25%)),transparent)]",
-        )}
+              "overflow-hidden group-data-[truncated=true]/pinned:[mask-image:linear-gradient(to_bottom,#000_calc(100%_-_min(1.75rem,25%)),transparent)]"
+        }
       >
         {/* Remounted on a toggle so the measure runs even when the height does not change. */}
         <div key={`${message.id}:${expanded}`} ref={measure}>
           <UserPromptMarkdown message={message} preview={!expanded} />
         </div>
       </div>
-      {expanded ? null : (
-        <button
-          type="button"
-          aria-label={`${leading ? "Load prompt" : "Jump to prompt"}: ${look.label}`}
-          onPointerDown={(event) => event.preventDefault()}
-          onClick={(event) => {
-            // The copy changes once the timeline lands on its prompt; focus must not stay.
-            event.currentTarget.blur();
-            onJump();
-          }}
-          className="absolute inset-0 cursor-pointer rounded-2xl hover:bg-foreground/[0.03] focus-visible:outline-2 focus-visible:outline-ring"
-        />
+      {expanded ? (
+        <div className="mt-1.5 flex items-center justify-end">{toggle}</div>
+      ) : (
+        <>
+          <button
+            type="button"
+            aria-label={`${leading ? "Load prompt" : "Jump to prompt"}: ${look.label}`}
+            onPointerDown={(event) => event.preventDefault()}
+            onClick={(event) => {
+              // The copy changes once the timeline lands on its prompt; focus must not stay.
+              event.currentTarget.blur();
+              onJump();
+            }}
+            className="absolute inset-0 cursor-pointer rounded-2xl hover:bg-foreground/[0.03] focus-visible:outline-2 focus-visible:outline-ring"
+          />
+          {/* Where the row's footer sits; once the card shrinks past it, it rides the bottom edge
+              over the end of the last line shown. */}
+          <div className="absolute end-3 bottom-3 hidden group-data-[truncated=true]/pinned:flex">
+            <span className="w-8 bg-linear-to-l from-message to-transparent rtl:bg-linear-to-r" />
+            <div className="bg-message">{toggle}</div>
+          </div>
+        </>
       )}
-      <div
-        data-pinned-prompt-footer=""
-        className={cn(
-          "relative mt-1.5 flex items-center justify-end gap-2",
-          !expanded &&
-            "group-data-[truncated=false]/pinned:invisible group-data-[truncated=false]/pinned:absolute",
-        )}
-      >
-        <Button
-          type="button"
-          size="xs"
-          variant="ghost-muted"
-          aria-expanded={expanded}
-          onPointerDown={(event) => event.preventDefault()}
-          onClick={onToggleExpanded}
-          className="-ml-1"
-        >
-          {expanded ? "Show less" : "Show full message"}
-        </Button>
-      </div>
     </div>
   );
 }
@@ -306,13 +338,9 @@ export function LeadingPromptPreview({
   const look = resolvePinnedPromptLook(message);
   if (look.kind !== "bubble" || look.attachmentsOnly) return null;
   const clampToTarget = (card: HTMLElement) => {
-    const natural = Number(card.dataset.natural);
-    const target = Number(card.dataset.target);
-    const open = card.dataset.expanded === "true";
-    const height = open ? "" : `${target}px`;
-    if (card.style.height !== height) card.style.height = height;
-    const truncated = !open && target < natural - 0.5 ? "true" : "false";
-    if (card.dataset.truncated !== truncated) card.dataset.truncated = truncated;
+    sizePromptCard(card, { covered: 0, cap: Infinity });
+    // It sits in the timeline, not over it.
+    card.dataset.floating = "false";
   };
   return (
     <div className="messages-timeline-row-frame pb-4">
