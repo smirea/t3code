@@ -849,6 +849,9 @@ const ConversationTimeline = memo(function ConversationTimeline({
 
   const floatingPromptZoneRef = useRef<HTMLDivElement | null>(null);
   const pinnedHeightRef = useRef(0);
+  // The scroll offsets between which the pinned copy sits still, so scrolls inside them skip the
+  // sync. Any sync not driven by a scroll recomputes it, and a layout change drops it.
+  const restingScrollRef = useRef<{ data: unknown; min: number; max: number } | null>(null);
   const bannerLaneRef = useRef<Element | null>(null);
   // A clicked leading prompt is loaded first; the sync that sees its row lands on it.
   const leadingJumpRef = useRef<string | null>(null);
@@ -858,6 +861,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   };
   // Runs from the scroll event itself so the push-out tracks the next prompt in the same frame.
   const syncFloatingPrompt = () => {
+    restingScrollRef.current = null;
     const zone = floatingPromptZoneRef.current;
     const state = listRef.current?.getState?.();
     const viewport = listRef.current?.getScrollableNode();
@@ -967,7 +971,8 @@ const ConversationTimeline = memo(function ConversationTimeline({
           cap: collapsedBody ? collapsedBody.getBoundingClientRect().height : Infinity,
         })
       : undefined;
-    const nextTop = (anchorRect(index + 1)?.top ?? Infinity) - line;
+    const nextAnchorTop = anchorRect(index + 1)?.top;
+    const nextTop = (nextAnchorTop ?? Infinity) - line;
     // An expanded prompt is being read, so it overlays the next prompt instead of being pushed.
     const pinnedHeight = cardHeight ?? layer.offsetHeight;
     pinnedHeightRef.current = pinnedHeight;
@@ -979,6 +984,28 @@ const ConversationTimeline = memo(function ConversationTimeline({
     // A copy on its way out is mostly clipped; keep it out of the tab order.
     const inert = offset < 0;
     if (layer.inert !== inert) layer.inert = inert;
+    if (expanded || offset < 0 || leadingJumpRef.current !== null) return;
+    const stuckRect = stuckAnchor?.getBoundingClientRect();
+    const covered = stuckRect ? stuckRect.bottom - line : 0;
+    // Past this the copy grows over its row, or the row's top drops below the line and hands off.
+    const coverable = Math.min(pinnedHeight, stuckRect?.height ?? pinnedHeight) - 1;
+    if (covered > coverable) return;
+    let nextReach = nextTop;
+    if (nextAnchorTop === undefined && minimapRowIndices[index + 1] !== undefined) {
+      // LegendList paints a prompt before it scrolls into view, but can paint it in a container
+      // it has not reindexed yet, so any painted prompt below counts.
+      nextReach = viewportTop + viewport.clientHeight - line;
+      for (const anchor of viewport.querySelectorAll("[data-sticky-prompt-anchor]")) {
+        const top = anchor.getBoundingClientRect().top;
+        if (top > (stuckRect?.bottom ?? line)) nextReach = Math.min(nextReach, top - line);
+      }
+    }
+    const scrollTop = viewport.scrollTop;
+    restingScrollRef.current = {
+      data: rows,
+      min: scrollTop - (coverable - covered),
+      max: scrollTop + Math.max(0, nextReach - STICKY_PROMPT_GAP_PX - pinnedHeight),
+    };
   };
 
   const syncFloatingPromptStable = useStableCallback(() => syncFloatingPrompt());
@@ -1117,7 +1144,16 @@ const ConversationTimeline = memo(function ConversationTimeline({
   };
 
   const handleScroll = () => {
-    syncFloatingPrompt();
+    const resting = restingScrollRef.current;
+    const scrollTop = listRef.current?.getScrollableNode()?.scrollTop;
+    if (
+      resting?.data !== rows ||
+      scrollTop === undefined ||
+      scrollTop <= resting.min ||
+      scrollTop >= resting.max
+    ) {
+      syncFloatingPrompt();
+    }
     if (restoringThreadPosition || listRef.current?.getState?.().data !== rows) return;
     const isAtEnd = rememberPosition(liveFollowEnabled && !anchoredEndSpace);
     if (isAtEnd !== undefined && !citationPositioning) {
@@ -1131,6 +1167,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
       scheduleDisclosureSettle();
     }
     floatingPromptSizeChangedRef.current = true;
+    restingScrollRef.current = null;
     scheduleMinimapRefresh();
   };
 
@@ -1156,6 +1193,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     if (laidOutData === rows) {
       setSettlingListIdentity((current) => (current === listIdentityKey ? null : current));
     }
+    restingScrollRef.current = null;
     handleScroll();
   });
   // The content lane only changes width with the viewport or the chat width

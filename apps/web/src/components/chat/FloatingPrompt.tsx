@@ -202,10 +202,7 @@ function PromptCard({
       <div
         data-pinned-prompt-body=""
         className={
-          expanded
-            ? "min-h-0 flex-1 overflow-y-auto overscroll-contain"
-            : // The row's collapsed fade, shortened on a two-line copy so its last line stays readable.
-              "overflow-hidden group-data-[truncated=true]/pinned:[mask-image:linear-gradient(to_bottom,#000_calc(100%_-_min(1.75rem,25%)),transparent)]"
+          expanded ? "min-h-0 flex-1 overflow-y-auto overscroll-contain" : "overflow-hidden"
         }
       >
         {/* Remounted on a toggle so the measure runs even when the height does not change. */}
