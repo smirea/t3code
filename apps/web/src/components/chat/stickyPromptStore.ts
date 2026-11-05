@@ -1,23 +1,26 @@
 import { useSyncExternalStore } from "react";
 
-/**
- * The row id of the prompt pinned under the top nav. The pinned copy and the timeline row both
- * read this one value, so a prompt is never drawn twice.
- */
+/** The prompt pinned under the sticky line, and the width of its bubble in the timeline. */
+export interface StickyPrompt {
+  readonly rowId: string;
+  readonly width: number | null;
+}
+
+/** Written from the scroll handler, read by the pinned copy without re-rendering the timeline. */
 export interface StickyPromptStore {
-  readonly get: () => string | null;
-  readonly set: (rowId: string | null) => void;
+  readonly get: () => StickyPrompt | null;
+  readonly set: (next: StickyPrompt | null) => void;
   readonly subscribe: (listener: () => void) => () => void;
 }
 
 export function createStickyPromptStore(): StickyPromptStore {
-  let rowId: string | null = null;
+  let current: StickyPrompt | null = null;
   const listeners = new Set<() => void>();
   return {
-    get: () => rowId,
+    get: () => current,
     set: (next) => {
-      if (next === rowId) return;
-      rowId = next;
+      if (next?.rowId === current?.rowId && next?.width === current?.width) return;
+      current = next;
       for (const listener of listeners) listener();
     },
     subscribe: (listener) => {
@@ -29,11 +32,6 @@ export function createStickyPromptStore(): StickyPromptStore {
   };
 }
 
-export function useStuckPromptRowId(store: StickyPromptStore): string | null {
+export function useStickyPrompt(store: StickyPromptStore): StickyPrompt | null {
   return useSyncExternalStore(store.subscribe, store.get, store.get);
-}
-
-export function useIsStuckPrompt(store: StickyPromptStore, rowId: string): boolean {
-  const isStuck = () => store.get() === rowId;
-  return useSyncExternalStore(store.subscribe, isStuck, isStuck);
 }

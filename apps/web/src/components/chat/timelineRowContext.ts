@@ -1,5 +1,4 @@
 import type { ToolCallDiffTarget } from "../../diffPanelStore";
-import type { StickyPromptStore } from "./stickyPromptStore";
 import type {
   ProviderApprovalDecision,
   RuntimeRequestId,
@@ -98,7 +97,6 @@ export interface TimelineRowSharedState {
   onWorktreeSetupWorkLocally: (() => void) | null;
   onOpenWorktreeSetupTerminal: ((terminalId: string) => void) | null;
   workGroupViewState: WorkGroupViewState;
-  stickyPrompt: StickyPromptStore;
 }
 
 export interface TimelineRowActivityState {

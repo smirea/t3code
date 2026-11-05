@@ -4,76 +4,93 @@ import { useState, type Ref } from "react";
 import { observeResize } from "~/lib/observeResize";
 import { cn } from "~/lib/utils";
 import type { MessagesTimelineRow } from "./MessagesTimeline.logic";
-import { useStuckPromptRowId, type StickyPromptStore } from "./stickyPromptStore";
-import { markdownPreviewText, type TimelineMinimapItem } from "./timelineMinimapItems";
-import { resolveUserPromptText, UserPromptMarkdown } from "./TimelineUserMessageRow";
+import { useStickyPrompt, type StickyPromptStore } from "./stickyPromptStore";
+import type { TimelineMinimapItem } from "./timelineMinimapItems";
+import {
+  PinnedPromptPill,
+  resolvePinnedPromptLook,
+  UserPromptMarkdown,
+} from "./TimelineUserMessageRow";
 
 /**
- * The copy of the stuck prompt pinned under the nav. It matches the timeline's user bubble so the
- * hand-off from the row is in place; the row hides itself while this copy shows.
+ * The stuck prompt, pinned at the sticky line over its own timeline row. It takes the row
+ * bubble's width and type, so at the hand-off it covers the row's first lines exactly and the
+ * rest of the row scrolls on underneath it, like a sticky header.
  */
 export function FloatingPrompt({
   ref,
   store,
   prompts,
   rows,
-  belowTopFade,
+  resyncKey,
   onSelect,
-  onLayoutChange,
+  onResync,
 }: {
   readonly ref?: Ref<HTMLDivElement>;
   readonly store: StickyPromptStore;
   readonly prompts: ReadonlyArray<TimelineMinimapItem>;
   readonly rows: ReadonlyArray<MessagesTimelineRow>;
-  readonly belowTopFade: boolean;
+  /** A change remeasures once its render commits, such as a restored thread position landing. */
+  readonly resyncKey: string;
   readonly onSelect: (rowIndex: number) => void;
-  /** Called after the pinned copy's content swaps, so the push-out offset can be remeasured. */
-  readonly onLayoutChange: () => void;
+  readonly onResync: () => void;
 }) {
-  const stuckRowId = useStuckPromptRowId(store);
-  const prompt = stuckRowId === null ? undefined : prompts.find((item) => item.id === stuckRowId);
+  const pinned = useStickyPrompt(store);
+  const prompt = pinned ? prompts.find((item) => item.id === pinned.rowId) : undefined;
   const row = prompt ? rows[prompt.rowIndex] : undefined;
   const message = row?.kind === "message" ? row.message : undefined;
   const [expandedRowId, setExpandedRowId] = useState<string | null>(null);
-  const expanded = message !== undefined && expandedRowId === stuckRowId;
-  const [truncated, setTruncated] = useState(false);
+  if (expandedRowId !== null && expandedRowId !== pinned?.rowId) setExpandedRowId(null);
+  const expanded = message !== undefined && expandedRowId === pinned?.rowId;
+  const look = message ? resolvePinnedPromptLook(message) : undefined;
+  const toggleExpanded = () => setExpandedRowId(expanded ? null : (pinned?.rowId ?? null));
 
-  const measureClamp = (element: HTMLDivElement | null) => {
-    if (!element) return;
-    const measure = () => setTruncated(element.scrollHeight > element.clientHeight + 1);
-    measure();
-    onLayoutChange();
-    return observeResize(element, measure);
+  const resync = (element: HTMLSpanElement | null) => {
+    if (element) onResync();
   };
-  const attachExpanded = (element: HTMLDivElement | null) => {
-    if (element) onLayoutChange();
+  // Measured after layout, so a hand-off never forces a synchronous layout to place the chevron.
+  const watchClamp = (element: HTMLDivElement | null) => {
+    const card = element?.closest<HTMLElement>("[data-pinned-prompt-card]");
+    if (!element || !card) return;
+    return observeResize(element, () => {
+      const truncated = element.scrollHeight > element.clientHeight + 1 ? "true" : "false";
+      if (card.dataset.truncated !== truncated) card.dataset.truncated = truncated;
+    });
   };
-  const label = message
-    ? markdownPreviewText(resolveUserPromptText(message)).replace(/\s+/g, " ").trim() ||
-      "User message"
-    : "";
 
   return (
-    // The zone starts at the sticky line and clips only its top edge, so a pushed-out prompt
-    // slides under the line instead of over the top fade and nav.
     <div
       ref={ref}
-      className={cn(
-        "pointer-events-none absolute inset-x-0 bottom-0 z-30 [clip-path:inset(0_-100vw_-100vh_-100vw)]",
-        belowTopFade ? "top-(--workspace-titlebar-scroll-fade-height)" : "top-0",
-      )}
+      className="pointer-events-none absolute inset-x-0 top-0 z-30"
       data-testid="floating-prompt"
-      data-visible={message ? "true" : "false"}
-      data-row-id={message ? stuckRowId : undefined}
+      data-visible={look ? "true" : "false"}
+      data-row-id={look ? pinned?.rowId : undefined}
       data-expanded={expanded ? "true" : "false"}
     >
-      <div className="chat-composer-lane absolute inset-x-0 top-0">
-        {message && prompt ? (
+      <span hidden key={resyncKey} ref={resync} />
+      <div data-pinned-prompt-layer="" className="chat-composer-lane absolute inset-x-0 top-0">
+        {look && message && prompt ? (
           <div className="chat-content-lane flex justify-end">
-            <div className="pointer-events-auto relative min-w-0 max-w-[80%] rounded-2xl bg-message text-message-foreground text-sm leading-relaxed shadow-md shadow-black/10">
-              {expanded ? (
+            <div
+              data-pinned-prompt-card=""
+              style={pinned?.width ? { width: pinned.width } : undefined}
+              className={cn(
+                "group/pinned pointer-events-auto relative min-w-0 rounded-2xl bg-message text-message-foreground text-sm leading-relaxed shadow-md shadow-black/10 ring-1 ring-black/5 dark:shadow-black/60 dark:ring-white/10",
+                pinned?.width ? "max-w-full" : "max-w-[80%]",
+              )}
+            >
+              {look.kind !== "bubble" ? (
+                <>
+                  <PinnedPromptPill look={look} expanded={expanded} onToggle={toggleExpanded} />
+                  {expanded ? (
+                    <div className="max-h-[50vh] overflow-y-auto overscroll-contain px-3 pb-3">
+                      <UserPromptMarkdown message={message} />
+                    </div>
+                  ) : null}
+                </>
+              ) : expanded ? (
                 <div
-                  ref={attachExpanded}
+                  dir={look.dir}
                   className="max-h-[50vh] overflow-y-auto overscroll-contain p-3 pe-9"
                 >
                   <UserPromptMarkdown message={message} />
@@ -81,30 +98,48 @@ export function FloatingPrompt({
               ) : (
                 <button
                   type="button"
-                  aria-label={`Jump to prompt: ${label}`}
+                  aria-label={`Jump to prompt: ${look.label}`}
                   onPointerDown={(event) => event.preventDefault()}
-                  onClick={() => onSelect(prompt.rowIndex)}
-                  className={cn(
-                    "block w-full cursor-pointer rounded-2xl p-3 text-left transition-[filter] hover:brightness-95 focus-visible:outline-2 focus-visible:outline-ring dark:hover:brightness-110",
-                    truncated && "pe-9",
-                  )}
+                  onClick={(event) => {
+                    // The copy changes once the timeline lands on its prompt; focus must not stay.
+                    event.currentTarget.blur();
+                    onSelect(prompt.rowIndex);
+                  }}
+                  className="block w-full cursor-pointer rounded-2xl p-3 text-start transition-[filter] hover:brightness-95 focus-visible:outline-2 focus-visible:outline-ring dark:hover:brightness-110"
                 >
-                  <div key={prompt.id} ref={measureClamp} className="line-clamp-2 break-words">
-                    {label}
+                  <div
+                    key={prompt.id}
+                    ref={watchClamp}
+                    dir={look.dir}
+                    className="line-clamp-2 break-words"
+                  >
+                    {look.paragraphs.map((paragraph) => (
+                      // Same paragraph spacing as the timeline's markdown, so lines match the row.
+                      <p key={paragraph.key} className="whitespace-pre-line [&+&]:mt-[0.65rem]">
+                        {paragraph.text}
+                      </p>
+                    ))}
                   </div>
                 </button>
               )}
-              {truncated || expanded ? (
-                <button
-                  type="button"
-                  aria-label={expanded ? "Collapse prompt" : "Show full prompt"}
-                  aria-expanded={expanded}
-                  onPointerDown={(event) => event.preventDefault()}
-                  onClick={() => setExpandedRowId(expanded ? null : stuckRowId)}
-                  className="absolute end-1.5 bottom-1.5 flex size-6 cursor-pointer items-center justify-center rounded-full text-message-foreground/70 hover:bg-foreground/10 hover:text-message-foreground focus-visible:outline-2 focus-visible:outline-ring"
+              {look.kind === "bubble" ? (
+                <div
+                  className={cn(
+                    "absolute end-0 bottom-0 items-end rounded-ee-2xl bg-linear-to-l from-message from-60% to-transparent ps-8 pe-1.5 pt-2 pb-1.5",
+                    expanded ? "flex" : "hidden group-data-[truncated=true]/pinned:flex",
+                  )}
                 >
-                  <ChevronDownIcon className={cn("size-4", expanded && "rotate-180")} />
-                </button>
+                  <button
+                    type="button"
+                    aria-label={expanded ? "Collapse prompt" : "Show full prompt"}
+                    aria-expanded={expanded}
+                    onPointerDown={(event) => event.preventDefault()}
+                    onClick={toggleExpanded}
+                    className="flex size-6 cursor-pointer items-center justify-center rounded-full text-message-foreground/70 hover:bg-foreground/10 hover:text-message-foreground focus-visible:outline-2 focus-visible:outline-ring"
+                  >
+                    <ChevronDownIcon className={cn("size-4", expanded && "rotate-180")} />
+                  </button>
+                </div>
               ) : null}
             </div>
           </div>

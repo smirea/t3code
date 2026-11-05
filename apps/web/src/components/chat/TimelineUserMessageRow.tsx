@@ -76,11 +76,11 @@ import { chatMarkdownClipboardPayload } from "../../markdown-clipboard";
 import type { ChatMarkdownContextReference } from "../ChatMarkdown";
 import { cn } from "~/lib/utils";
 import { markdownProseDirection } from "~/textDirection";
+import { markdownPreviewText } from "./timelineMinimapItems";
 import { useMediaQuery } from "~/hooks/useMediaQuery";
 import { formatChatTimestampTooltip, formatDayAwareTimestamp } from "../../timestampFormat";
 import { WorkflowOpeningBlock } from "./WorkflowOpeningBlock";
 import { TimelineRowCtx, TimelineRowActivityCtx, type TimelineRow } from "./timelineRowContext";
-import { useIsStuckPrompt } from "./stickyPromptStore";
 import {
   MESSAGE_HEADING_LEVEL,
   MessageAuthorHeading,
@@ -251,16 +251,12 @@ export function UserMessageRow({ row }: { row: Extract<TimelineRow, { kind: "mes
   const ctx = use(TimelineRowCtx);
   const item = row.projectedItem?.item;
   const modelSwitch = item?.type === "user_message" ? item.modelSwitch : undefined;
-  // While pinned under the nav, the pinned copy stands in for the row; it keeps its space.
-  const stuck = useIsStuckPrompt(ctx.stickyPrompt, row.id);
   return (
     <>
       {modelSwitch ? (
         <ModelSwitchRow environmentId={ctx.activeThreadEnvironmentId} modelSwitch={modelSwitch} />
       ) : null}
-      <div data-sticky-prompt-anchor="" className={stuck ? "invisible" : undefined}>
-        <UserMessageContent row={row} />
-      </div>
+      <UserMessageContent row={row} />
     </>
   );
 }
@@ -303,6 +299,7 @@ function AutomationMessageRow({ row }: { row: Extract<TimelineRow, { kind: "mess
         <UserMessageIntentMarker intent={row.message.inputIntent} />
       ) : null}
       <div
+        data-sticky-prompt-anchor=""
         className={cn(
           "min-w-0 max-w-[80%] rounded-2xl bg-message text-message-foreground",
           BUBBLE_CHIP_CLASS_NAME,
@@ -859,6 +856,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
         </div>
       ) : null}
       <div
+        data-sticky-prompt-anchor=""
         className={cn(
           "relative min-w-0 max-w-[80%] rounded-2xl text-message-foreground",
           (mediaAboveText || row.groupedWithPrevious) && "rounded-tr-md",
@@ -1180,9 +1178,112 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
 
 type UserPromptMessage = Extract<TimelineRow, { kind: "message" }>["message"];
 
-export function resolveUserPromptText(message: UserPromptMessage): string {
+function resolveUserPromptText(message: UserPromptMessage): string {
   const presentation = resolveUserMessagePresentation(message);
   return resolveUserMessageContext({ ...message, text: presentation.text }).text;
+}
+
+/** How the pinned copy of a prompt draws it, mirroring how its timeline row draws it. */
+export type PinnedPromptLook =
+  | {
+      readonly kind: "bubble";
+      /** Plain text in the row's paragraphs and lines, so the copy wraps like the row. */
+      readonly paragraphs: ReadonlyArray<{ readonly key: string; readonly text: string }>;
+      readonly label: string;
+      readonly dir: ReturnType<typeof markdownProseDirection>;
+    }
+  | {
+      readonly kind: "agent";
+      readonly senderThreadId: UserPromptMessage["senderThreadId"];
+      readonly summary: string;
+    }
+  | {
+      readonly kind: "automation";
+      readonly scheduledTaskId: ScheduledTaskId | undefined;
+      readonly summary: string;
+    };
+
+const pinnedLookCache = new Map<
+  string,
+  { readonly source: string; readonly look: PinnedPromptLook }
+>();
+
+/** Cached per prompt: hand-offs repeat while scrolling, and the plain text needs a markdown parse. */
+export function resolvePinnedPromptLook(message: UserPromptMessage): PinnedPromptLook {
+  const cached = pinnedLookCache.get(message.id);
+  if (cached?.source === message.text) return cached.look;
+  const presentation = resolveUserMessagePresentation(message);
+  const text = resolveUserPromptText(message);
+  const firstLine = text.trim().split(/\r?\n/, 1)[0] ?? "";
+  const paragraphs = replaceComposerContextReferences(text, (reference) => reference.label)
+    .split(/\r?\n/)
+    .slice(0, 20)
+    .join("\n")
+    .split(/\n\s*\n/)
+    .map((paragraph) =>
+      paragraph
+        .split("\n")
+        .map((line) => markdownPreviewText(line).replace(/\s+/g, " ").trim())
+        .filter((line) => line.length > 0)
+        .join("\n"),
+    )
+    .filter((paragraph) => paragraph.length > 0);
+  const attachmentNames = (message.attachments ?? []).map((attachment) => attachment.name);
+  const look: PinnedPromptLook =
+    presentation.attribution === "automation"
+      ? { kind: "automation", scheduledTaskId: presentation.scheduledTaskId, summary: firstLine }
+      : presentation.attribution === "agent"
+        ? { kind: "agent", senderThreadId: message.senderThreadId, summary: firstLine }
+        : {
+            kind: "bubble",
+            paragraphs: (paragraphs.length > 0 ? paragraphs : [attachmentNames.join(", ")]).map(
+              (paragraph, index) => ({ key: `${message.id}:${index}`, text: paragraph }),
+            ),
+            label: paragraphs.join(" ") || attachmentNames.join(", ") || "User message",
+            dir: markdownProseDirection(text),
+          };
+  if (pinnedLookCache.size > 500) pinnedLookCache.clear();
+  pinnedLookCache.set(message.id, { source: message.text, look });
+  return look;
+}
+
+/** The folded pill a pinned agent or automation prompt shows, matching its timeline row. */
+export function PinnedPromptPill({
+  look,
+  expanded,
+  onToggle,
+}: {
+  look: Extract<PinnedPromptLook, { kind: "agent" | "automation" }>;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const ctx = use(TimelineRowCtx);
+  const senderShell = useQuietThreadShell(
+    look.kind === "agent" && look.senderThreadId
+      ? { environmentId: ctx.activeThreadEnvironmentId, threadId: look.senderThreadId }
+      : null,
+  );
+  const scheduledTitle = useScheduledTaskTitle(
+    ctx.activeThreadEnvironmentId,
+    look.kind === "automation" ? look.scheduledTaskId : undefined,
+  );
+  return look.kind === "automation" ? (
+    <FoldedMessageHeader
+      icon={CalendarClockIcon}
+      label="Automation"
+      summary={scheduledTitle ?? look.summary}
+      expanded={expanded}
+      onToggle={onToggle}
+    />
+  ) : (
+    <FoldedMessageHeader
+      icon={MessagesSquareIcon}
+      label={senderShell?.title.trim() || "Agent"}
+      summary={look.summary}
+      expanded={expanded}
+      onToggle={onToggle}
+    />
+  );
 }
 
 export function UserPromptMarkdown({ message }: { message: UserPromptMessage }) {

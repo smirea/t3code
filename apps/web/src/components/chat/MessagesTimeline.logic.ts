@@ -393,14 +393,14 @@ export function resolveTimelineMinimapVisibleRange(state: {
   return { start, end };
 }
 
-/** Last index in `[0, count)` matching `predicate`, which must hold for a prefix; -1 if none. */
-export function findLastIndex(count: number, predicate: (index: number) => boolean): number {
+/** Index of the last value at or before `target` in an ascending array, or -1. */
+export function findLastAtOrBefore(sorted: ReadonlyArray<number>, target: number): number {
   let low = 0;
-  let high = count - 1;
+  let high = sorted.length - 1;
   let found = -1;
   while (low <= high) {
     const mid = (low + high) >> 1;
-    if (predicate(mid)) {
+    if (sorted[mid]! <= target) {
       found = mid;
       low = mid + 1;
     } else {

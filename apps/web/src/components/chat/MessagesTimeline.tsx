@@ -50,7 +50,6 @@ import {
 import {
   LegendList,
   type LegendListRef,
-  type LegendListState,
   type MaintainScrollAtEndOptions,
 } from "@legendapp/list/react";
 import { type PendingApproval, type TimelineEntry } from "../../session-logic";
@@ -84,7 +83,7 @@ import {
   resolveTimelineMinimapHasPersistentGutter,
   resolveTimelineMinimapCurrentIndex,
   isTimelineMinimapRowVisible,
-  findLastIndex,
+  findLastAtOrBefore,
   resolveTimelineMinimapVisibleRange,
   resolveTimelineMinimapHitStripWidth,
   timelineTurnFoldRunIdsByEntryId,
@@ -845,23 +844,9 @@ const ConversationTimeline = memo(function ConversationTimeline({
     shouldRestorePosition: shouldRestoreVisibleContentPosition,
   };
 
-  // Cached row positions exclude the header and pending scroll adjustments.
-  const resolveListScroll = (state: LegendListState, viewport: HTMLElement) => {
-    const firstBufferedIndex = state.startBuffered;
-    const firstBufferedRow =
-      firstBufferedIndex == null ? undefined : state.elementAtIndex(firstBufferedIndex);
-    const firstBufferedTop =
-      firstBufferedIndex == null ? undefined : state.positionAtIndex(firstBufferedIndex);
-    return firstBufferedRow && firstBufferedTop !== undefined
-      ? firstBufferedTop +
-          viewport.getBoundingClientRect().top -
-          firstBufferedRow.getBoundingClientRect().top
-      : state.scroll;
-  };
-
   const floatingPromptZoneRef = useRef<HTMLDivElement | null>(null);
+  const bannerLaneRef = useRef<Element | null>(null);
   // Runs from the scroll event itself so the push-out tracks the next prompt in the same frame.
-  // The list's own visible range lags the scroll event, so rendered prompts are measured directly.
   const syncFloatingPrompt = () => {
     const zone = floatingPromptZoneRef.current;
     const state = listRef.current?.getState?.();
@@ -871,58 +856,92 @@ const ConversationTimeline = memo(function ConversationTimeline({
       stickyPrompt.set(null);
       return;
     }
+    // The sticky line is the timeline's top edge, or the bottom of a banner over it, so the part
+    // of a stuck row above the line is already clipped or covered and the row never hides.
     const viewportTop = viewport.getBoundingClientRect().top;
-    const bannerBottom = zone
-      .closest("[data-chat-column]")
-      ?.querySelector(".chat-banner-lane")
-      ?.getBoundingClientRect().bottom;
-    const bannerInset =
-      bannerBottom === undefined || bannerBottom <= viewportTop
-        ? 0
-        : bannerBottom - viewportTop + STICKY_PROMPT_GAP_PX;
-    const zoneInsetTop = bannerInset > 0 ? `${bannerInset}px` : "";
-    if (zone.style.top !== zoneInsetTop) zone.style.top = zoneInsetTop;
-    const zoneTop = zone.getBoundingClientRect().top;
-    const line = resolveListScroll(state, viewport) + zoneTop - viewportTop;
-    const promptTop = (index: number) => {
-      const row = minimapRowIndices[index]!;
-      const anchor = state.elementAtIndex(row)?.querySelector("[data-sticky-prompt-anchor]");
-      return anchor
-        ? anchor.getBoundingClientRect().top - zoneTop
-        : state.positionAtIndex(row) - line;
+    const banner = bannerLaneRef.current?.getBoundingClientRect();
+    const lineInset = banner && banner.height > 0 ? Math.max(0, banner.bottom - viewportTop) : 0;
+    const zoneTop = `${lineInset}px`;
+    if (zone.style.top !== zoneTop) zone.style.top = zoneTop;
+    const line = viewportTop + lineInset;
+    // Painted rows only: LegendList moves its row indices before it redraws recycled containers,
+    // so a container fetched by index can still be showing another row.
+    let rowAtLine: number | undefined;
+    let rowAtLineTop = -Infinity;
+    for (const element of viewport.querySelectorAll<HTMLElement>("[data-timeline-row-id]")) {
+      const top = element.getBoundingClientRect().top;
+      if (top >= line || top <= rowAtLineTop) continue;
+      const index = state.indexByKey(element.dataset.timelineRowId ?? "");
+      if (index === undefined) continue;
+      rowAtLine = index;
+      rowAtLineTop = top;
+    }
+    const anchorRect = (index: number) => {
+      const rowId = minimapItems[index]?.id;
+      return rowId === undefined
+        ? undefined
+        : viewport
+            .querySelector(
+              `[data-timeline-row-id="${CSS.escape(rowId)}"] [data-sticky-prompt-anchor]`,
+            )
+            ?.getBoundingClientRect();
     };
-    // A prompt sticks once its top passes the line. The pixel of slack keeps a prompt that a jump
-    // scrolled exactly onto the line in the timeline.
-    const index = findLastIndex(minimapRowIndices.length, (candidate) => promptTop(candidate) < -1);
+    let index = rowAtLine === undefined ? -1 : findLastAtOrBefore(minimapRowIndices, rowAtLine);
+    // The row at the line can be the prompt's own row with its bubble still below the line.
+    if (index >= 0 && minimapRowIndices[index] === rowAtLine) {
+      const own = anchorRect(index);
+      if (own && own.top >= line) index -= 1;
+    }
     const stuck = minimapItems[index];
-    stickyPrompt.set(stuck?.id ?? null);
-    const layer = zone.firstElementChild;
-    if (!stuck || !(layer instanceof HTMLElement)) return;
-    const nextTop = index + 1 < minimapRowIndices.length ? promptTop(index + 1) : Infinity;
+    if (!stuck) {
+      stickyPrompt.set(null);
+      return;
+    }
+    const anchorWidth = anchorRect(index)?.width;
+    const previous = stickyPrompt.get();
+    stickyPrompt.set({
+      rowId: stuck.id,
+      width:
+        anchorWidth === undefined
+          ? previous?.rowId === stuck.id
+            ? previous.width
+            : null
+          : Math.round(anchorWidth * 2) / 2,
+    });
+    const layer = zone.querySelector<HTMLElement>("[data-pinned-prompt-layer]");
+    if (!layer) return;
+    const nextTop = (anchorRect(index + 1)?.top ?? Infinity) - line;
     // An expanded prompt is being read, so it overlays the next prompt instead of being pushed.
     const offset =
       zone.dataset.expanded === "true"
         ? 0
-        : Math.min(0, nextTop - STICKY_PROMPT_GAP_PX - (layer.offsetTop + layer.offsetHeight));
+        : Math.min(0, nextTop - STICKY_PROMPT_GAP_PX - layer.offsetHeight);
     const translate = `0 ${offset}px`;
     if (layer.style.translate !== translate) layer.style.translate = translate;
+    const clipPath = offset < 0 ? `inset(${-offset}px -40px -40px -40px)` : "";
+    if (layer.style.clipPath !== clipPath) layer.style.clipPath = clipPath;
   };
 
   const syncFloatingPromptStable = useStableCallback(() => syncFloatingPrompt());
-  // Unmounting the pinned copy (feature off, narrow window, no prompts) must unhide its row.
   const attachFloatingPromptZone = useStableCallback((zone: HTMLDivElement | null) => {
     floatingPromptZoneRef.current = zone;
     // Thread banners overlay the top of the timeline, so prompts stick below them.
-    const bannerLane = zone?.closest("[data-chat-column]")?.querySelector(".chat-banner-lane");
-    const stopObservingBanners = bannerLane
-      ? observeResize(bannerLane, syncFloatingPromptStable)
-      : undefined;
+    bannerLaneRef.current =
+      zone?.closest("[data-chat-column]")?.querySelector(".chat-banner-lane") ?? null;
+    const layer = zone?.querySelector("[data-pinned-prompt-layer]");
+    const observed = [bannerLaneRef.current, layer].filter((element) => element != null);
+    // The pinned copy's height decides the push-out, and it changes after each hand-off renders.
+    const stopObserving =
+      observed.length > 0 ? observeResize(observed, syncFloatingPromptStable) : undefined;
     return () => {
-      stopObservingBanners?.();
+      stopObserving?.();
       floatingPromptZoneRef.current = null;
+      bannerLaneRef.current = null;
       stickyPrompt.set(null);
     };
   });
+  // Size changes reach the pinned copy through the next frame; scrolls sync directly.
+  const floatingPromptSizeChangedRef = useRef(false);
 
   const refreshMinimap = useStableCallback(() => {
     const state = listRef.current?.getState?.();
@@ -931,8 +950,19 @@ const ConversationTimeline = memo(function ConversationTimeline({
       return;
     }
 
+    const firstBufferedIndex = state.startBuffered;
+    const firstBufferedRow: HTMLElement | undefined =
+      firstBufferedIndex == null ? undefined : state.elementAtIndex(firstBufferedIndex);
+    const firstBufferedTop =
+      firstBufferedIndex == null ? undefined : state.positionAtIndex(firstBufferedIndex);
     const viewport: HTMLElement | undefined = listRef.current?.getScrollableNode();
-    const scroll = viewport ? resolveListScroll(state, viewport) : state.scroll;
+    // Cached row positions exclude the header and pending scroll adjustments.
+    const scroll =
+      firstBufferedRow && viewport && firstBufferedTop !== undefined
+        ? firstBufferedTop +
+          viewport.getBoundingClientRect().top -
+          firstBufferedRow.getBoundingClientRect().top
+        : state.scroll;
     const visibleRange = resolveTimelineMinimapVisibleRange({ ...state, scroll });
     for (const item of minimapItems) {
       const strip = minimapStripMap.get(item.id);
@@ -955,7 +985,10 @@ const ConversationTimeline = memo(function ConversationTimeline({
     setMinimapCurrentIndex((current) =>
       current === nextCurrentIndex ? current : nextCurrentIndex,
     );
-    syncFloatingPrompt();
+    if (floatingPromptSizeChangedRef.current) {
+      floatingPromptSizeChangedRef.current = false;
+      syncFloatingPrompt();
+    }
   });
 
   const minimapRefreshFrameRef = useRef<number | null>(null);
@@ -1026,6 +1059,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     if (disclosureAnchorKeyRef.current !== null) {
       scheduleDisclosureSettle();
     }
+    floatingPromptSizeChangedRef.current = true;
     scheduleMinimapRefresh();
   };
 
@@ -1129,7 +1163,6 @@ const ConversationTimeline = memo(function ConversationTimeline({
     onWorktreeSetupWorkLocally: onWorktreeSetupWorkLocally ?? null,
     onOpenWorktreeSetupTerminal: onOpenWorktreeSetupTerminal ?? null,
     workGroupViewState,
-    stickyPrompt,
   };
   const compactionAwaitingRow =
     isCompacting &&
@@ -1341,13 +1374,23 @@ const ConversationTimeline = memo(function ConversationTimeline({
     </TimelineListFooter>
   );
 
-  const scrollToRow = (rowIndex: number) => {
+  const scrollToRow = (rowIndex: number, viewOffset = 24) => {
     navigateTimeline();
     void listRef.current?.scrollToIndex({
       index: rowIndex,
       animated: !window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-      viewOffset: 24,
+      viewOffset,
     });
+  };
+  // Lands the prompt below a banner as well, where the sticky line sits.
+  const jumpToPinnedPrompt = (rowIndex: number) => {
+    const zone = floatingPromptZoneRef.current;
+    const viewport = listRef.current?.getScrollableNode();
+    const lineInset =
+      zone && viewport
+        ? zone.getBoundingClientRect().top - viewport.getBoundingClientRect().top
+        : 0;
+    scrollToRow(rowIndex, lineInset + 24);
   };
 
   const forwardMinimapWheel = (event: WheelEvent) => {
@@ -1456,9 +1499,9 @@ const ConversationTimeline = memo(function ConversationTimeline({
                   store={stickyPrompt}
                   prompts={minimapItems}
                   rows={rows}
-                  belowTopFade={topFadeEnabled}
-                  onSelect={scrollToRow}
-                  onLayoutChange={syncFloatingPromptStable}
+                  resyncKey={`${listIdentityKey}:${restoringThreadPosition ? "restoring" : "shown"}`}
+                  onSelect={jumpToPinnedPrompt}
+                  onResync={syncFloatingPromptStable}
                 />
               </TimelineRowCtx>
             ) : null}
