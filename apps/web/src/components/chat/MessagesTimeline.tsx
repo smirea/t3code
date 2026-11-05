@@ -9,7 +9,7 @@ import { WorkLogBlock } from "./WorkLog";
 import { TimelinePendingApprovalRow } from "./TimelinePendingApprovalRow";
 import type { WorktreeSetupSnapshot } from "@t3tools/contracts";
 import { deriveTimelineMinimapItems } from "./timelineMinimapItems";
-import { FloatingPrompt, LeadingPromptPreview, sizePromptCard } from "./FloatingPrompt";
+import { FloatingPrompt, LeadingPromptPreview, sizePromptCard, writeStyle } from "./FloatingPrompt";
 import { createStickyPromptStore, LEADING_PROMPT_ROW_ID } from "./stickyPromptStore";
 import {
   type AssistantCitation,
@@ -848,6 +848,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   };
 
   const floatingPromptZoneRef = useRef<HTMLDivElement | null>(null);
+  const pinnedHeightRef = useRef(0);
   const bannerLaneRef = useRef<Element | null>(null);
   // A clicked leading prompt is loaded first; the sync that sees its row lands on it.
   const leadingJumpRef = useRef<string | null>(null);
@@ -867,7 +868,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     const banner = bannerLaneRef.current?.getBoundingClientRect();
     const lineInset = banner && banner.height > 0 ? Math.max(0, banner.bottom - viewportTop) : 0;
     const zoneTop = `${lineInset}px`;
-    if (zone.style.top !== zoneTop) zone.style.top = zoneTop;
+    writeStyle(zone, "top", zoneTop);
     const line = viewportTop + lineInset;
     const leadingJumpIndex =
       leadingJumpRef.current === null
@@ -939,9 +940,10 @@ const ConversationTimeline = memo(function ConversationTimeline({
       stuckId !== undefined && lineInset > 0
         ? `linear-gradient(to bottom, transparent ${lineInset}px, #000 ${lineInset}px)`
         : "";
-    if (viewport.style.maskImage !== viewportMask) viewport.style.maskImage = viewportMask;
+    writeStyle(viewport, "maskImage", viewportMask);
     if (stuckId === undefined) {
       stickyPrompt.set(null);
+      pinnedHeightRef.current = 0;
       return;
     }
     const anchorWidth = index >= 0 ? anchorRect(index)?.width : leadingAnchor?.width;
@@ -967,13 +969,13 @@ const ConversationTimeline = memo(function ConversationTimeline({
       : undefined;
     const nextTop = (anchorRect(index + 1)?.top ?? Infinity) - line;
     // An expanded prompt is being read, so it overlays the next prompt instead of being pushed.
-    const offset = expanded
-      ? 0
-      : Math.min(0, nextTop - STICKY_PROMPT_GAP_PX - (cardHeight ?? layer.offsetHeight));
+    const pinnedHeight = cardHeight ?? layer.offsetHeight;
+    pinnedHeightRef.current = pinnedHeight;
+    const offset = expanded ? 0 : Math.min(0, nextTop - STICKY_PROMPT_GAP_PX - pinnedHeight);
     const translate = `0 ${offset}px`;
-    if (layer.style.translate !== translate) layer.style.translate = translate;
+    writeStyle(layer, "translate", translate);
     const clipPath = offset < 0 ? `inset(${-offset}px -40px -40px -40px)` : "";
-    if (layer.style.clipPath !== clipPath) layer.style.clipPath = clipPath;
+    writeStyle(layer, "clipPath", clipPath);
     // A copy on its way out is mostly clipped; keep it out of the tab order.
     const inert = offset < 0;
     if (layer.inert !== inert) layer.inert = inert;
@@ -986,18 +988,24 @@ const ConversationTimeline = memo(function ConversationTimeline({
     bannerLaneRef.current =
       zone?.closest("[data-chat-column]")?.querySelector(".chat-banner-lane") ?? null;
     const viewport = listRef.current?.getScrollableNode();
-    // The pinned copy's height decides the push-out and changes after each hand-off renders;
-    // banners and resizes move the line or the row widths.
-    const observed = [
-      bannerLaneRef.current,
-      zone?.querySelector("[data-pinned-prompt-layer]"),
-      viewport,
-    ].filter((element) => element != null);
+    // Banners and resizes move the line or the row widths.
+    const observed = [bannerLaneRef.current, viewport].filter((element) => element != null);
     const stopObserving =
       observed.length > 0 ? observeResize(observed, syncFloatingPromptStable) : undefined;
+    // The sync sizes the pinned copy every frame it shrinks, so only a height it did not write,
+    // such as a pill copy rendering in, needs another pass.
+    const layer = zone?.querySelector("[data-pinned-prompt-layer]");
+    // oxlint-disable-next-line t3code/no-raw-resize-observer -- observeResize flushes React on every callback, and this fires on every frame the copy shrinks
+    const layerObserver = new ResizeObserver(([entry]) => {
+      if (entry && Math.abs(entry.contentRect.height - pinnedHeightRef.current) > 0.5) {
+        syncFloatingPromptStable();
+      }
+    });
+    if (layer) layerObserver.observe(layer);
     return () => {
       stopObserving?.();
-      if (viewport) viewport.style.maskImage = "";
+      layerObserver.disconnect();
+      if (viewport) writeStyle(viewport, "maskImage", "");
       floatingPromptZoneRef.current = null;
       bannerLaneRef.current = null;
       stickyPrompt.set(null);

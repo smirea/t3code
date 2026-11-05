@@ -19,11 +19,37 @@ import {
   type PinnedPromptLook,
 } from "./TimelineUserMessageRow";
 
+const writtenStyles = new WeakMap<HTMLElement, Map<string, string>>();
+
 /**
- * Where to cut a block to its first two rendered lines, or null when it has two or fewer. Cutting
- * between lines two and three keeps the last line shown whole whatever the markdown's spacing.
+ * Writes a style only when it changed since the last write. Reading `element.style` back cannot
+ * tell: it returns values normalized ("0 0px" reads "0px 0px", 55.015625px reads 55.0156px), so a
+ * read-back check rewrites every frame and each rewrite re-layerizes the page.
  */
-function twoLineCut(element: HTMLElement): number | null {
+export function writeStyle(
+  element: HTMLElement,
+  property: "height" | "translate" | "top" | "maskImage" | "clipPath",
+  value: string,
+): void {
+  let written = writtenStyles.get(element);
+  if (!written) {
+    written = new Map();
+    writtenStyles.set(element, written);
+  }
+  if (written.get(property) === value) return;
+  written.set(property, value);
+  element.style[property] = value;
+}
+
+/** Top padding a floating card keeps once its content has lifted into the rest. */
+const FLOATING_TOP_PADDING_PX = 8;
+
+/**
+ * Where to cut a block to its first two rendered lines (null when it has two or fewer), and how far
+ * its first line sits below its top, as a leading quote or heading margin does. Cutting between
+ * lines two and three keeps the last line shown whole whatever the markdown's spacing.
+ */
+function twoLineCut(element: HTMLElement): { cut: number | null; leading: number } {
   const lines: Array<{ top: number; bottom: number }> = [];
   const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
   const range = document.createRange();
@@ -36,36 +62,51 @@ function twoLineCut(element: HTMLElement): number | null {
       else lines.push({ top: rect.top, bottom: rect.bottom });
     }
   }
-  if (lines.length < 3) return null;
   lines.sort((a, b) => a.top - b.top);
-  return (lines[1]!.bottom + lines[2]!.top) / 2 - element.getBoundingClientRect().top;
+  const top = element.getBoundingClientRect().top;
+  return {
+    cut: lines.length < 3 ? null : (lines[1]!.bottom + lines[2]!.top) / 2 - top,
+    leading: lines.length > 0 ? Math.max(0, lines[0]!.top - top) : 0,
+  };
 }
 
 /**
  * Sizes a card per scroll frame without reading layout. It covers `covered`, what is left of its
  * row below the line, so the row never shows twice; `cap` is what a collapsed row shows. Shrinking,
- * its bottom edge first rises through the footer space, then clips the content to two lines.
+ * its bottom edge rises through the footer space, the content lifts into the top whitespace, and
+ * then the content clips to two lines. `lift: false` keeps the row's top padding.
  */
 export function sizePromptCard(
   card: HTMLElement,
-  { covered, cap }: { readonly covered: number; readonly cap: number },
+  {
+    covered,
+    cap,
+    lift = true,
+  }: { readonly covered: number; readonly cap: number; readonly lift?: boolean },
 ): number | undefined {
   const body = card.querySelector<HTMLElement>("[data-pinned-prompt-body]");
   if (card.dataset.content === undefined || !body) return undefined;
   if (card.dataset.expanded === "true") {
-    if (card.style.height !== "") card.style.height = "";
-    if (body.style.height !== "") body.style.height = "";
+    writeStyle(card, "height", "");
+    writeStyle(body, "height", "");
+    writeStyle(body, "translate", "");
     if (card.dataset.floating !== "true") card.dataset.floating = "true";
     return undefined;
   }
   const content = Number(card.dataset.content);
   const padding = Number(card.dataset.padding);
-  const height = Math.max(Number(card.dataset.target), covered);
-  const shown = Math.min(cap, content, height - padding);
+  const liftable = Number(card.dataset.lift);
+  const maxLift = lift ? liftable : 0;
+  const height = Math.max(Number(card.dataset.target) + liftable - maxLift, covered);
+  const wanted = Math.min(cap, content);
+  const lifted = Math.min(maxLift, Math.max(0, wanted - (height - padding)));
+  const shown = Math.min(wanted, height - padding + lifted);
   const cardHeight = `${height}px`;
-  if (card.style.height !== cardHeight) card.style.height = cardHeight;
+  writeStyle(card, "height", cardHeight);
   const bodyHeight = `${shown}px`;
-  if (body.style.height !== bodyHeight) body.style.height = bodyHeight;
+  writeStyle(body, "height", bodyHeight);
+  const bodyTranslate = lifted > 0 ? `0 ${-lifted}px` : "";
+  writeStyle(body, "translate", bodyTranslate);
   const truncated = content > shown + 0.5 ? "true" : "false";
   if (card.dataset.truncated !== truncated) card.dataset.truncated = truncated;
   const floating = height > covered + 0.5 ? "true" : "false";
@@ -114,10 +155,16 @@ function PromptCard({
       const cardStyle = getComputedStyle(card);
       const padding = parseFloat(cardStyle.paddingTop) + parseFloat(cardStyle.paddingBottom);
       const height = content.offsetHeight;
-      const cut = twoLineCut(content);
+      const { cut, leading } = twoLineCut(content);
+      // Only a clipped copy lifts; a short one keeps the row's even padding.
+      const lift =
+        cut === null
+          ? 0
+          : Math.max(0, parseFloat(cardStyle.paddingTop) - FLOATING_TOP_PADDING_PX) + leading;
       card.dataset.content = String(height);
       card.dataset.padding = String(padding);
-      card.dataset.target = String(padding + (cut ?? height));
+      card.dataset.lift = String(lift);
+      card.dataset.target = String(padding + (cut ?? height) - lift);
       onMeasured(card);
     });
     observer.observe(content);
@@ -162,7 +209,8 @@ function PromptCard({
         }
       >
         {/* Remounted on a toggle so the measure runs even when the height does not change. */}
-        <div key={`${message.id}:${expanded}`} ref={measure}>
+        {/* flow-root keeps a leading quote's margin inside, where measuring sees it. */}
+        <div key={`${message.id}:${expanded}`} ref={measure} className="flow-root">
           <UserPromptMarkdown message={message} preview={!expanded} />
         </div>
       </div>
@@ -338,7 +386,7 @@ export function LeadingPromptPreview({
   const look = resolvePinnedPromptLook(message);
   if (look.kind !== "bubble" || look.attachmentsOnly) return null;
   const clampToTarget = (card: HTMLElement) => {
-    sizePromptCard(card, { covered: 0, cap: Infinity });
+    sizePromptCard(card, { covered: 0, cap: Infinity, lift: false });
     // It sits in the timeline, not over it.
     card.dataset.floating = "false";
   };

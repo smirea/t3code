@@ -1278,7 +1278,7 @@ export function PinnedPromptPill({
 }
 
 /** Past this, a preview renders only the prompt's opening, which is all a clipped copy can show. */
-const PROMPT_PREVIEW_CHARS = 3_000;
+const PROMPT_PREVIEW_CHARS = 1_200;
 
 export function UserPromptMarkdown({
   message,
