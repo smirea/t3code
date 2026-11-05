@@ -41,15 +41,21 @@ export function writeStyle(
   element.style[property] = value;
 }
 
-/** Top padding a floating card keeps once its content has lifted into the rest. */
-const FLOATING_TOP_PADDING_PX = 8;
+/** What a floating card keeps of its padding, above its first line and below its last. */
+const FLOATING_PADDING_PX = 8;
 
 /**
- * Where to cut a block to its first two rendered lines (null when it has two or fewer), and how far
- * its first line sits below its top, as a leading quote or heading margin does. Cutting between
- * lines two and three keeps the last line shown whole whatever the markdown's spacing.
+ * Where to cut a block to its first two rendered lines (null when it has two or fewer), how far
+ * its first line sits below its top, as a leading quote or heading margin does, and how far the cut
+ * falls below the second line. Cutting between lines two and three keeps the last line shown whole
+ * whatever the markdown's spacing.
  */
-function twoLineCut(element: HTMLElement): { cut: number | null; leading: number } {
+function twoLineCut(element: HTMLElement): {
+  cut: number | null;
+  leading: number;
+  trailing: number;
+  lastLine: number;
+} {
   const lines: Array<{ top: number; bottom: number }> = [];
   const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
   const range = document.createRange();
@@ -67,14 +73,16 @@ function twoLineCut(element: HTMLElement): { cut: number | null; leading: number
   return {
     cut: lines.length < 3 ? null : (lines[1]!.bottom + lines[2]!.top) / 2 - top,
     leading: lines.length > 0 ? Math.max(0, lines[0]!.top - top) : 0,
+    trailing: lines.length < 3 ? 0 : Math.max(0, (lines[2]!.top - lines[1]!.bottom) / 2),
+    lastLine: lines.length < 3 ? 0 : lines[1]!.bottom - lines[1]!.top,
   };
 }
 
 /**
- * Sizes a card per scroll frame without reading layout. It covers `covered`, what is left of its
- * row below the line, so the row never shows twice; `cap` is what a collapsed row shows. Shrinking,
- * its bottom edge rises through the footer space, the content lifts into the top whitespace, and
- * then the content clips to two lines. `lift: false` keeps the row's top padding.
+ * Sizes a card per scroll frame without reading layout, covering `covered` (its row below the
+ * line) so the row never shows twice; `cap` is what a collapsed row shows. Shrinking, its bottom
+ * edge rises through the footer and bottom padding, the content lifts into the top padding, then
+ * clips to two lines. `lift: false` keeps the row's padding.
  */
 export function sizePromptCard(
   card: HTMLElement,
@@ -96,17 +104,28 @@ export function sizePromptCard(
   const content = Number(card.dataset.content);
   const padding = Number(card.dataset.padding);
   const liftable = Number(card.dataset.lift);
+  const sinkable = Number(card.dataset.sink);
   const maxLift = lift ? liftable : 0;
-  const height = Math.max(Number(card.dataset.target) + liftable - maxLift, covered);
+  const maxSink = lift ? sinkable : 0;
+  const height = Math.max(
+    Number(card.dataset.target) + liftable - maxLift + sinkable - maxSink,
+    covered,
+  );
   const wanted = Math.min(cap, content);
-  const lifted = Math.min(maxLift, Math.max(0, wanted - (height - padding)));
-  const shown = Math.min(wanted, height - padding + lifted);
+  const room = height - padding;
+  const sunk = Math.min(maxSink, Math.max(0, wanted - room));
+  const lifted = Math.min(maxLift, Math.max(0, wanted - room - sunk));
+  const shown = Math.min(wanted, room + sunk + lifted);
   const cardHeight = `${height}px`;
   writeStyle(card, "height", cardHeight);
   const bodyHeight = `${shown}px`;
   writeStyle(body, "height", bodyHeight);
   const bodyTranslate = lifted > 0 ? `0 ${-lifted}px` : "";
   writeStyle(body, "translate", bodyTranslate);
+  // The button stays over the last line while the bottom edge closes in under it.
+  const toggle = card.querySelector<HTMLElement>("[data-pinned-prompt-toggle]");
+  const dropped = sunk > 0 ? (sunk / sinkable) * Number(card.dataset.drop) : 0;
+  if (toggle) writeStyle(toggle, "translate", dropped !== 0 ? `0 ${dropped}px` : "");
   const truncated = content > shown + 0.5 ? "true" : "false";
   if (card.dataset.truncated !== truncated) card.dataset.truncated = truncated;
   const floating = height > covered + 0.5 ? "true" : "false";
@@ -155,16 +174,24 @@ function PromptCard({
       const cardStyle = getComputedStyle(card);
       const padding = parseFloat(cardStyle.paddingTop) + parseFloat(cardStyle.paddingBottom);
       const height = content.offsetHeight;
-      const { cut, leading } = twoLineCut(content);
-      // Only a clipped copy lifts; a short one keeps the row's even padding.
+      const { cut, leading, trailing, lastLine } = twoLineCut(content);
+      // Only a clipped copy trims its padding; a short one keeps the row's.
       const lift =
         cut === null
           ? 0
-          : Math.max(0, parseFloat(cardStyle.paddingTop) - FLOATING_TOP_PADDING_PX) + leading;
+          : Math.max(0, parseFloat(cardStyle.paddingTop) - FLOATING_PADDING_PX) + leading;
+      const bottomTrim = Math.max(0, parseFloat(cardStyle.paddingBottom) - FLOATING_PADDING_PX);
+      const sink = cut === null ? 0 : bottomTrim + trailing;
+      // How far the button moves down to sit centered on the last line once the card is trimmed.
+      const toggleHeight =
+        card.querySelector<HTMLElement>("[data-pinned-prompt-toggle]")?.offsetHeight ?? 0;
+      const drop = cut === null ? 0 : bottomTrim + (toggleHeight - lastLine) / 2;
       card.dataset.content = String(height);
       card.dataset.padding = String(padding);
       card.dataset.lift = String(lift);
-      card.dataset.target = String(padding + (cut ?? height) - lift);
+      card.dataset.sink = String(sink);
+      card.dataset.drop = String(drop);
+      card.dataset.target = String(padding + (cut ?? height) - lift - sink);
       onMeasured(card);
     });
     observer.observe(content);
@@ -228,7 +255,10 @@ function PromptCard({
           />
           {/* Where the row's footer sits; once the card shrinks past it, it rides the bottom edge
               over the end of the last line shown. */}
-          <div className="absolute end-3 bottom-3 hidden group-data-[truncated=true]/pinned:flex">
+          <div
+            data-pinned-prompt-toggle=""
+            className="invisible absolute end-3 bottom-3 flex group-data-[truncated=true]/pinned:visible"
+          >
             <span className="w-8 bg-linear-to-l from-message to-transparent rtl:bg-linear-to-r" />
             <div className="bg-message">{toggle}</div>
           </div>
