@@ -223,14 +223,13 @@ function PromptCard({
           cardStyle.direction === "rtl"
             ? contentRect.right - ends.left
             : ends.right - contentRect.left;
-        const needed =
-          parseFloat(cardStyle.paddingInlineStart) +
-          lineEnd +
-          STAMP_GAP_PX +
-          timeElement.offsetWidth +
-          parseFloat(cardStyle.paddingInlineEnd);
-        const width = parseFloat(card.style.width) || card.offsetWidth;
-        const widest = (card.parentElement?.clientWidth ?? width) * BUBBLE_MAX_WIDTH_RATIO;
+        const padding =
+          parseFloat(cardStyle.paddingInlineStart) + parseFloat(cardStyle.paddingInlineEnd);
+        const needed = padding + lineEnd + STAMP_GAP_PX + timeElement.offsetWidth;
+        const widest = (card.parentElement?.clientWidth ?? 0) * BUBBLE_MAX_WIDTH_RATIO;
+        // Never the rendered width: that includes the widening, and measuring it would undo it
+        // every other frame. Without its row's width a card fits its text, or wraps at the widest.
+        const width = parseFloat(card.style.width) || (count === 1 ? padding + lineEnd : widest);
         if (needed > width) {
           if (count === 1 && needed <= widest) widen = needed - width;
           else stamp = toggleHeight - bottomTrim;
