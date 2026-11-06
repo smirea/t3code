@@ -1,7 +1,8 @@
 import { ImageIcon } from "lucide-react";
-import { useState, type CSSProperties, type Ref } from "react";
+import { use, useState, type CSSProperties, type Ref } from "react";
 
 import { cn } from "~/lib/utils";
+import { formatDayAwareTimestamp } from "../../timestampFormat";
 import type { ChatMessage } from "../../types";
 import { Button } from "../ui/button";
 import type { MessagesTimelineRow } from "./MessagesTimeline.logic";
@@ -11,6 +12,7 @@ import {
   type StickyPromptStore,
 } from "./stickyPromptStore";
 import type { TimelineMinimapItem } from "./timelineMinimapItems";
+import { TimelineRowCtx } from "./timelineRowContext";
 import {
   BUBBLE_CHIP_CLASS_NAME,
   PinnedPromptPill,
@@ -28,7 +30,7 @@ const writtenStyles = new WeakMap<HTMLElement, Map<string, string>>();
  */
 export function writeStyle(
   element: HTMLElement,
-  property: "height" | "translate" | "top" | "maskImage" | "clipPath",
+  property: "height" | "translate" | "top" | "maskImage" | "clipPath" | "opacity" | "minWidth",
   value: string,
 ): void {
   let written = writtenStyles.get(element);
@@ -44,19 +46,23 @@ export function writeStyle(
 /** What a floating card keeps of its padding, above its first line and below its last. */
 const FLOATING_PADDING_PX = 8;
 
+/** The least space between a whole prompt's last line and the time beside it. */
+const STAMP_GAP_PX = 8;
+
 /**
  * Where to cut a block to its first two rendered lines (null when it has two or fewer), how far
  * its first line sits below its top, as a leading quote or heading margin does, and how far the cut
  * falls below the second line. Cutting between lines two and three keeps the last line shown whole
- * whatever the markdown's spacing.
+ * whatever the markdown's spacing. `ends` spans the last line shown, left to right.
  */
 function twoLineCut(element: HTMLElement): {
   cut: number | null;
   leading: number;
   trailing: number;
   lastLine: number;
+  ends: { left: number; right: number } | null;
 } {
-  const lines: Array<{ top: number; bottom: number }> = [];
+  const lines: Array<{ top: number; bottom: number; left: number; right: number }> = [];
   const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
   const range = document.createRange();
   for (let node = walker.nextNode(); node && lines.length < 3; node = walker.nextNode()) {
@@ -64,8 +70,11 @@ function twoLineCut(element: HTMLElement): {
     for (const rect of range.getClientRects()) {
       if (rect.width === 0) continue;
       const line = lines.find((candidate) => Math.abs(candidate.top - rect.top) < 1);
-      if (line) line.bottom = Math.max(line.bottom, rect.bottom);
-      else lines.push({ top: rect.top, bottom: rect.bottom });
+      if (line) {
+        line.bottom = Math.max(line.bottom, rect.bottom);
+        line.left = Math.min(line.left, rect.left);
+        line.right = Math.max(line.right, rect.right);
+      } else lines.push({ top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right });
     }
   }
   lines.sort((a, b) => a.top - b.top);
@@ -75,14 +84,14 @@ function twoLineCut(element: HTMLElement): {
     leading: lines.length > 0 ? Math.max(0, lines[0]!.top - top) : 0,
     trailing: lines.length < 3 ? 0 : Math.max(0, (lines[2]!.top - lines[1]!.bottom) / 2),
     lastLine: lines.length < 3 ? 0 : lines[1]!.bottom - lines[1]!.top,
+    ends: lines[Math.min(lines.length, 2) - 1] ?? null,
   };
 }
 
 /**
- * Sizes a card per scroll frame without reading layout, covering `covered` (its row below the
- * line) so the row never shows twice; `cap` is what a collapsed row shows. Shrinking, its bottom
- * edge rises through the footer and bottom padding, the content lifts into the top padding, then
- * clips to two lines. `lift: false` keeps the row's padding.
+ * Sizes a card per frame without reading layout, covering `covered` (its row below the line);
+ * `cap` is what a collapsed row shows. It shrinks through its footer and padding to two lines, or
+ * a whole prompt grows a line for its time. `lift: false` keeps the row's padding.
  */
 export function sizePromptCard(
   card: HTMLElement,
@@ -107,10 +116,10 @@ export function sizePromptCard(
   const sinkable = Number(card.dataset.sink);
   const maxLift = lift ? liftable : 0;
   const maxSink = lift ? sinkable : 0;
-  const height = Math.max(
-    Number(card.dataset.target) + liftable - maxLift + sinkable - maxSink,
-    covered,
-  );
+  const stamp = lift ? Number(card.dataset.stamp) : 0;
+  const base = Number(card.dataset.target) + liftable - maxLift + sinkable - maxSink;
+  const grown = Math.min(stamp, Math.max(0, base - covered));
+  const height = Math.max(base + grown, covered);
   const wanted = Math.min(cap, content);
   const room = height - padding;
   const sunk = Math.min(maxSink, Math.max(0, wanted - room));
@@ -122,10 +131,16 @@ export function sizePromptCard(
   writeStyle(body, "height", bodyHeight);
   const bodyTranslate = lifted > 0 ? `0 ${-lifted}px` : "";
   writeStyle(body, "translate", bodyTranslate);
-  // The button stays over the last line while the bottom edge closes in under it.
+  // The button stays over the last line while the bottom edge closes in under it, and a time
+  // growing its own line settles into it.
   const toggle = card.querySelector<HTMLElement>("[data-pinned-prompt-toggle]");
-  const dropped = sunk > 0 ? (sunk / sinkable) * Number(card.dataset.drop) : 0;
-  if (toggle) writeStyle(toggle, "translate", dropped !== 0 ? `0 ${dropped}px` : "");
+  const progress = sunk > 0 ? sunk / sinkable : grown > 0 ? grown / stamp : 0;
+  const dropped = progress * Number(card.dataset.drop);
+  if (toggle) {
+    writeStyle(toggle, "translate", dropped !== 0 ? `0 ${dropped}px` : "");
+    writeStyle(toggle, "opacity", grown > 0 && grown < stamp ? String(progress) : "");
+  }
+  writeStyle(card, "minWidth", grown > 0 ? `${card.dataset.stampWidth}px` : "");
   const truncated = content > shown + 0.5 ? "true" : "false";
   if (card.dataset.truncated !== truncated) card.dataset.truncated = truncated;
   const floating = height > covered + 0.5 ? "true" : "false";
@@ -141,6 +156,7 @@ export function sizePromptCard(
 function PromptCard({
   message,
   look,
+  time,
   expanded,
   leading,
   style,
@@ -152,6 +168,7 @@ function PromptCard({
 }: {
   readonly message: ChatMessage;
   readonly look: Extract<PinnedPromptLook, { kind: "bubble" }>;
+  readonly time?: string;
   readonly expanded: boolean;
   readonly leading?: boolean;
   readonly style?: CSSProperties | undefined;
@@ -174,7 +191,7 @@ function PromptCard({
       const cardStyle = getComputedStyle(card);
       const padding = parseFloat(cardStyle.paddingTop) + parseFloat(cardStyle.paddingBottom);
       const height = content.offsetHeight;
-      const { cut, leading, trailing, lastLine } = twoLineCut(content);
+      const { cut, leading, trailing, lastLine, ends } = twoLineCut(content);
       // Only a clipped copy trims its padding; a short one keeps the row's.
       const lift =
         cut === null
@@ -185,18 +202,48 @@ function PromptCard({
       // How far the button moves down to sit centered on the last line once the card is trimmed.
       const toggleHeight =
         card.querySelector<HTMLElement>("[data-pinned-prompt-toggle]")?.offsetHeight ?? 0;
-      const drop = cut === null ? 0 : bottomTrim + (toggleHeight - lastLine) / 2;
+      const timeElement = card.querySelector<HTMLElement>("[data-pinned-prompt-time]");
+      let stamp = 0;
+      if (cut === null && timeElement && ends) {
+        const cardRect = card.getBoundingClientRect();
+        const inset = parseFloat(cardStyle.paddingInlineEnd) + timeElement.offsetWidth;
+        const room =
+          cardStyle.direction === "rtl"
+            ? ends.left - (cardRect.left + inset)
+            : cardRect.right - inset - ends.right;
+        if (room < STAMP_GAP_PX) stamp = toggleHeight - bottomTrim;
+        card.dataset.stampWidth = String(
+          timeElement.offsetWidth +
+            parseFloat(cardStyle.paddingInlineStart) +
+            parseFloat(cardStyle.paddingInlineEnd),
+        );
+      }
+      const drop =
+        cut === null ? (stamp > 0 ? bottomTrim : 0) : bottomTrim + (toggleHeight - lastLine) / 2;
       card.dataset.content = String(height);
       card.dataset.padding = String(padding);
       card.dataset.lift = String(lift);
       card.dataset.sink = String(sink);
       card.dataset.drop = String(drop);
+      card.dataset.stamp = String(stamp);
       card.dataset.target = String(padding + (cut ?? height) - lift - sink);
       onMeasured(card);
     });
     observer.observe(content);
+    // The time's width changes with the clock format or the day, and decides whether it fits.
+    const timeElement = card.querySelector("[data-pinned-prompt-time]");
+    if (timeElement) observer.observe(timeElement);
     return () => observer.disconnect();
   };
+  const timeLabel = time ? (
+    <span
+      data-pinned-prompt-time=""
+      dir="auto"
+      className="pointer-events-none flex h-7 items-center px-1 text-muted-foreground text-xs tabular-nums sm:h-6"
+    >
+      {time}
+    </span>
+  ) : null;
   const toggle = (
     <Button
       type="button"
@@ -228,6 +275,8 @@ function PromptCard({
     >
       <div
         data-pinned-prompt-body=""
+        // Clipped lines must not take focus; the card's jump button stands in for them.
+        inert={!expanded}
         className={
           expanded ? "min-h-0 flex-1 overflow-y-auto overscroll-contain" : "overflow-hidden"
         }
@@ -239,7 +288,10 @@ function PromptCard({
         </div>
       </div>
       {expanded ? (
-        <div className="mt-1.5 flex items-center justify-end">{toggle}</div>
+        <div className="mt-1.5 flex items-center justify-end gap-1">
+          {timeLabel}
+          {toggle}
+        </div>
       ) : (
         <>
           <button
@@ -254,13 +306,18 @@ function PromptCard({
             className="absolute inset-0 cursor-pointer rounded-2xl hover:bg-foreground/[0.03] focus-visible:outline-2 focus-visible:outline-ring"
           />
           {/* Where the row's footer sits; once the card shrinks past it, it rides the bottom edge
-              over the end of the last line shown. */}
+              over the end of the last line shown. A floating copy shows its time here too. */}
           <div
             data-pinned-prompt-toggle=""
-            className="invisible absolute end-3 bottom-3 flex group-data-[truncated=true]/pinned:visible"
+            className="pointer-events-none invisible absolute end-3 bottom-3 flex group-data-[floating=true]/pinned:visible group-data-[truncated=true]/pinned:visible"
           >
-            <span className="w-8 bg-linear-to-l from-message to-transparent rtl:bg-linear-to-r" />
-            <div className="bg-message">{toggle}</div>
+            <span className="hidden w-8 bg-linear-to-l from-message to-transparent group-data-[truncated=true]/pinned:block rtl:bg-linear-to-r" />
+            <div className="flex items-center gap-1 bg-message">
+              {timeLabel}
+              <div className="pointer-events-auto hidden group-data-[truncated=true]/pinned:flex">
+                {toggle}
+              </div>
+            </div>
           </div>
         </>
       )}
@@ -300,6 +357,7 @@ export function FloatingPrompt({
   readonly onWheel: (event: WheelEvent) => void;
 }) {
   const pinned = useStickyPrompt(store);
+  const { timestampFormat } = use(TimelineRowCtx);
   const prompt = pinned ? prompts.find((item) => item.id === pinned.rowId) : undefined;
   const row = prompt ? rows[prompt.rowIndex] : undefined;
   const message =
@@ -346,6 +404,7 @@ export function FloatingPrompt({
               <PromptCard
                 message={message}
                 look={look}
+                time={formatDayAwareTimestamp(message.createdAt, timestampFormat)}
                 expanded={expanded}
                 style={widthStyle}
                 className={widthClassName}

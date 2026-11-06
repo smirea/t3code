@@ -1203,15 +1203,12 @@ export type PinnedPromptLook =
       readonly summary: string;
     };
 
-const pinnedLookCache = new Map<
-  string,
-  { readonly source: string; readonly look: PinnedPromptLook }
->();
+const pinnedLookCache = new WeakMap<UserPromptMessage, PinnedPromptLook>();
 
 /** Cached per prompt: hand-offs repeat while scrolling, and the label needs a markdown parse. */
 export function resolvePinnedPromptLook(message: UserPromptMessage): PinnedPromptLook {
-  const cached = pinnedLookCache.get(message.id);
-  if (cached?.source === message.text) return cached.look;
+  const cached = pinnedLookCache.get(message);
+  if (cached) return cached;
   const presentation = resolveUserMessagePresentation(message);
   const text = resolveUserPromptText(message);
   const firstLine = text.trim().split(/\r?\n/, 1)[0] ?? "";
@@ -1233,8 +1230,7 @@ export function resolvePinnedPromptLook(message: UserPromptMessage): PinnedPromp
             label: plain || attachmentNames.join(", ") || "User message",
             dir: markdownProseDirection(text),
           };
-  if (pinnedLookCache.size > 500) pinnedLookCache.clear();
-  pinnedLookCache.set(message.id, { source: message.text, look });
+  pinnedLookCache.set(message, look);
   return look;
 }
 
@@ -1289,10 +1285,12 @@ export function UserPromptMarkdown({
 }) {
   const ctx = use(TimelineRowCtx);
   const text = resolveUserPromptText(message);
-  const cut =
+  const newline =
     preview && text.length > PROMPT_PREVIEW_CHARS
       ? text.lastIndexOf("\n", PROMPT_PREVIEW_CHARS)
       : -1;
+  // A newline near the start would cut the preview to its first line and hide that it is cut.
+  const cut = newline > PROMPT_PREVIEW_CHARS / 2 ? newline : -1;
   return (
     <UserMessageBody
       text={cut > 0 ? text.slice(0, cut) : preview ? text.slice(0, PROMPT_PREVIEW_CHARS) : text}

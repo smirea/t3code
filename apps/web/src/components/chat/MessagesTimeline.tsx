@@ -856,8 +856,9 @@ const ConversationTimeline = memo(function ConversationTimeline({
   // A clicked leading prompt is loaded first; the sync that sees its row lands on it.
   const leadingJumpRef = useRef<string | null>(null);
   const loadAndJumpToLeadingPrompt = (message: ChatMessage) => {
+    if (!historyControls) return;
     leadingJumpRef.current = message.id;
-    historyControls?.onLoadEarlier(message.id);
+    historyControls.onLoadEarlier(message.id);
   };
   // Runs from the scroll event itself so the push-out tracks the next prompt in the same frame.
   const syncFloatingPrompt = () => {
@@ -878,6 +879,14 @@ const ConversationTimeline = memo(function ConversationTimeline({
       leadingJumpRef.current === null
         ? -1
         : rows.findIndex((row) => row.id === leadingJumpRef.current);
+    if (
+      leadingJumpIndex < 0 &&
+      leadingJumpRef.current !== null &&
+      (historyControls?.error != null || leadingPrompt?.id !== leadingJumpRef.current)
+    ) {
+      // The load failed, or landed without the row; a later load must not jump unasked.
+      leadingJumpRef.current = null;
+    }
     if (leadingJumpIndex >= 0) {
       leadingJumpRef.current = null;
       navigateTimeline();
@@ -965,14 +974,15 @@ const ConversationTimeline = memo(function ConversationTimeline({
         ? anchorElement(index)
         : viewport.querySelector<HTMLElement>("[data-leading-prompt-anchor]");
     const collapsedBody = stuckAnchor?.querySelector('[data-user-message-collapsed="true"]');
-    const cardHeight = card
-      ? sizePromptCard(card, {
-          covered: stuckAnchor ? Math.max(0, stuckAnchor.getBoundingClientRect().bottom - line) : 0,
-          cap: collapsedBody ? collapsedBody.getBoundingClientRect().height : Infinity,
-        })
-      : undefined;
+    // Every timeline read comes before the card's writes, so a frame lays out once.
+    const stuckRect = stuckAnchor?.getBoundingClientRect();
+    const cap = collapsedBody ? collapsedBody.getBoundingClientRect().height : Infinity;
     const nextAnchorTop = anchorRect(index + 1)?.top;
     const nextTop = (nextAnchorTop ?? Infinity) - line;
+    const covered = stuckRect ? stuckRect.bottom - line : 0;
+    const cardHeight = card
+      ? sizePromptCard(card, { covered: Math.max(0, covered), cap })
+      : undefined;
     // An expanded prompt is being read, so it overlays the next prompt instead of being pushed.
     const pinnedHeight = cardHeight ?? layer.offsetHeight;
     pinnedHeightRef.current = pinnedHeight;
@@ -985,10 +995,10 @@ const ConversationTimeline = memo(function ConversationTimeline({
     const inert = offset < 0;
     if (layer.inert !== inert) layer.inert = inert;
     if (expanded || offset < 0 || leadingJumpRef.current !== null) return;
-    const stuckRect = stuckAnchor?.getBoundingClientRect();
-    const covered = stuckRect ? stuckRect.bottom - line : 0;
     // Past this the copy grows over its row, or the row's top drops below the line and hands off.
-    const coverable = Math.min(pinnedHeight, stuckRect?.height ?? pinnedHeight) - 1;
+    // A copy growing a line for its time is still only once that line is in, `stamp` past the row.
+    const stamp = Number(card?.dataset.stamp) || 0;
+    const coverable = Math.min(pinnedHeight - 2 * stamp, stuckRect?.height ?? pinnedHeight) - 1;
     if (covered > coverable) return;
     let nextReach = nextTop;
     if (nextAnchorTop === undefined && minimapRowIndices[index + 1] !== undefined) {
@@ -1337,7 +1347,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     <>
       {parentThreadLink === null ? listHeaderLeadingContent : null}
       {historyControls ? <TimelineHistoryControl {...historyControls} /> : null}
-      {stickyPromptsEnabled && leadingPrompt !== null ? (
+      {floatingPromptSupported && leadingPrompt !== null ? (
         <TimelineRowCtx value={sharedState}>
           <LeadingPromptPreview message={leadingPrompt} onSelect={loadAndJumpToLeadingPrompt} />
         </TimelineRowCtx>
