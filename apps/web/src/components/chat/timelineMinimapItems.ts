@@ -93,7 +93,7 @@ export function markdownPreviewText(markdown: string): string {
   return markdownNodeText(markdownPreviewParser.parse(markdown.slice(0, 1_500)));
 }
 
-function compactMinimapPreview(text: string | null | undefined) {
+export function compactMinimapPreview(text: string | null | undefined) {
   const compact = text?.replace(/\s+/g, " ").trim() ?? "";
   return compact.length > 0 ? compact : null;
 }

@@ -43,6 +43,15 @@ export function writeStyle(
   element.style[property] = value;
 }
 
+/** A collapsed copy sits over the timeline, so wheeling on it scrolls the timeline. */
+function wheelForwarder(onWheel: ((event: WheelEvent) => void) | undefined) {
+  return (card: HTMLDivElement | null) => {
+    if (!card || !onWheel) return;
+    card.addEventListener("wheel", onWheel, { passive: false });
+    return () => card.removeEventListener("wheel", onWheel);
+  };
+}
+
 /** What a floating card keeps of its padding, above its first line and below its last. */
 const FLOATING_PADDING_PX = 8;
 
@@ -72,7 +81,7 @@ function twoLineCut(element: HTMLElement): {
   const lines: Array<{ top: number; bottom: number; left: number; right: number }> = [];
   const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
   const range = document.createRange();
-  for (let node = walker.nextNode(); node && lines.length < 3; node = walker.nextNode()) {
+  walk: for (let node = walker.nextNode(); node; node = walker.nextNode()) {
     range.selectNodeContents(node);
     for (const rect of range.getClientRects()) {
       if (rect.width === 0) continue;
@@ -81,7 +90,8 @@ function twoLineCut(element: HTMLElement): {
         line.bottom = Math.max(line.bottom, rect.bottom);
         line.left = Math.min(line.left, rect.left);
         line.right = Math.max(line.right, rect.right);
-      } else lines.push({ top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right });
+      } else if (lines.length === 3) break walk;
+      else lines.push({ top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right });
     }
   }
   lines.sort((a, b) => a.top - b.top);
@@ -99,7 +109,7 @@ function twoLineCut(element: HTMLElement): {
 /**
  * Sizes a card per frame without reading layout, covering `covered` (its row below the line);
  * `cap` is what a collapsed row shows. It shrinks through its footer and padding to two lines, or
- * a whole prompt grows a line for its time. `lift: false` keeps the row's padding.
+ * a whole prompt grows a line for its time. `lift: false` keeps the row's padding and flat look.
  */
 export function sizePromptCard(
   card: HTMLElement,
@@ -111,11 +121,16 @@ export function sizePromptCard(
 ): number | undefined {
   const body = card.querySelector<HTMLElement>("[data-pinned-prompt-body]");
   if (card.dataset.content === undefined || !body) return undefined;
+  // Only a copy over the timeline floats; one sitting in it keeps the row's flat look.
+  const setFloating = (floating: boolean) => {
+    const value = lift && floating ? "true" : "false";
+    if (card.dataset.floating !== value) card.dataset.floating = value;
+  };
   if (card.dataset.expanded === "true") {
     writeStyle(card, "height", "");
     writeStyle(body, "height", "");
     writeStyle(body, "translate", "");
-    if (card.dataset.floating !== "true") card.dataset.floating = "true";
+    setFloating(true);
     return undefined;
   }
   const content = Number(card.dataset.content);
@@ -126,7 +141,7 @@ export function sizePromptCard(
   const maxSink = lift ? sinkable : 0;
   const stamp = lift ? Number(card.dataset.stamp) : 0;
   const widen = lift ? Number(card.dataset.widen) : 0;
-  const base = Number(card.dataset.target) + liftable - maxLift + sinkable - maxSink;
+  const base = Number(card.dataset.target) + (lift ? 0 : liftable + sinkable);
   const settled = stamp > 0 || widen > 0 ? Math.min(1, Math.max(0, base - covered) / SETTLE_PX) : 0;
   const height = Math.max(base + stamp * settled, covered);
   const wanted = Math.min(cap, content);
@@ -134,12 +149,9 @@ export function sizePromptCard(
   const sunk = Math.min(maxSink, Math.max(0, wanted - room));
   const lifted = Math.min(maxLift, Math.max(0, wanted - room - sunk));
   const shown = Math.min(wanted, room + sunk + lifted);
-  const cardHeight = `${height}px`;
-  writeStyle(card, "height", cardHeight);
-  const bodyHeight = `${shown}px`;
-  writeStyle(body, "height", bodyHeight);
-  const bodyTranslate = lifted > 0 ? `0 ${-lifted}px` : "";
-  writeStyle(body, "translate", bodyTranslate);
+  writeStyle(card, "height", `${height}px`);
+  writeStyle(body, "height", `${shown}px`);
+  writeStyle(body, "translate", lifted > 0 ? `0 ${-lifted}px` : "");
   // The button stays over the last line while the bottom edge closes in under it, and a time
   // settles into the room a whole prompt makes for it.
   const toggle = card.querySelector<HTMLElement>("[data-pinned-prompt-toggle]");
@@ -153,8 +165,7 @@ export function sizePromptCard(
   writeStyle(card, "minWidth", minWidth > 0 ? `${minWidth}px` : "");
   const truncated = content > shown + 0.5 ? "true" : "false";
   if (card.dataset.truncated !== truncated) card.dataset.truncated = truncated;
-  const floating = height > covered + 0.5 ? "true" : "false";
-  if (card.dataset.floating !== floating) card.dataset.floating = floating;
+  setFloating(height > covered + 0.5);
   return height;
 }
 
@@ -188,31 +199,33 @@ function PromptCard({
   readonly onMeasured: (card: HTMLElement) => void;
   readonly onWheel?: (event: WheelEvent) => void;
 }) {
-  const forwardWheel = (card: HTMLDivElement | null) => {
-    if (!card || !onWheel || expanded) return;
-    card.addEventListener("wheel", onWheel, { passive: false });
-    return () => card.removeEventListener("wheel", onWheel);
-  };
+  const forwardWheel = wheelForwarder(expanded ? undefined : onWheel);
   const measure = (content: HTMLDivElement | null) => {
     const card = content?.closest<HTMLElement>("[data-pinned-prompt-card]");
     if (!content || !card) return;
+    const toggle = card.querySelector<HTMLElement>("[data-pinned-prompt-toggle]");
+    const timeElement = card.querySelector<HTMLElement>("[data-pinned-prompt-time]");
+    let measured = "";
     // oxlint-disable-next-line t3code/no-raw-resize-observer -- writes DOM only, never React state; observeResize's flush would pull unrelated pending renders into every hand-off frame
     const observer = new ResizeObserver(() => {
-      const cardStyle = getComputedStyle(card);
-      const padding = parseFloat(cardStyle.paddingTop) + parseFloat(cardStyle.paddingBottom);
+      // An expanded copy is never sized, so only its resync matters.
+      if (expanded) return onMeasured(card);
       const height = content.offsetHeight;
+      // Widening the card for its time resizes this content too, which changes nothing measured.
+      const inputs = `${height}|${card.style.width}|${card.parentElement?.clientWidth}|${timeElement?.offsetWidth}`;
+      if (inputs === measured && card.style.minWidth !== "") return;
+      measured = inputs;
+      const cardStyle = getComputedStyle(card);
+      const paddingTop = parseFloat(cardStyle.paddingTop);
+      const paddingBottom = parseFloat(cardStyle.paddingBottom);
+      const padding = paddingTop + paddingBottom;
       const { cut, leading, trailing, lastLine, ends, count } = twoLineCut(content);
       // Only a clipped copy trims its padding; a short one keeps the row's.
-      const lift =
-        cut === null
-          ? 0
-          : Math.max(0, parseFloat(cardStyle.paddingTop) - FLOATING_PADDING_PX) + leading;
-      const bottomTrim = Math.max(0, parseFloat(cardStyle.paddingBottom) - FLOATING_PADDING_PX);
+      const lift = cut === null ? 0 : Math.max(0, paddingTop - FLOATING_PADDING_PX) + leading;
+      const bottomTrim = Math.max(0, paddingBottom - FLOATING_PADDING_PX);
       const sink = cut === null ? 0 : bottomTrim + trailing;
       // How far the button moves down to sit centered on the last line once the card is trimmed.
-      const toggleHeight =
-        card.querySelector<HTMLElement>("[data-pinned-prompt-toggle]")?.offsetHeight ?? 0;
-      const timeElement = card.querySelector<HTMLElement>("[data-pinned-prompt-time]");
+      const toggleHeight = toggle?.offsetHeight ?? 0;
       // A whole prompt keeps the time at the end of its last line: a single line widens the card
       // for it, since that cannot rewrap; past the widest bubble it takes a line of its own.
       let stamp = 0;
@@ -223,13 +236,14 @@ function PromptCard({
           cardStyle.direction === "rtl"
             ? contentRect.right - ends.left
             : ends.right - contentRect.left;
-        const padding =
+        const inlinePadding =
           parseFloat(cardStyle.paddingInlineStart) + parseFloat(cardStyle.paddingInlineEnd);
-        const needed = padding + lineEnd + STAMP_GAP_PX + timeElement.offsetWidth;
+        const needed = inlinePadding + lineEnd + STAMP_GAP_PX + timeElement.offsetWidth;
         const widest = (card.parentElement?.clientWidth ?? 0) * BUBBLE_MAX_WIDTH_RATIO;
         // Never the rendered width: that includes the widening, and measuring it would undo it
         // every other frame. Without its row's width a card fits its text, or wraps at the widest.
-        const width = parseFloat(card.style.width) || (count === 1 ? padding + lineEnd : widest);
+        const width =
+          parseFloat(card.style.width) || (count === 1 ? inlinePadding + lineEnd : widest);
         if (needed > width) {
           if (count === 1 && needed <= widest) widen = needed - width;
           else stamp = toggleHeight - bottomTrim;
@@ -251,7 +265,6 @@ function PromptCard({
     });
     observer.observe(content);
     // The time's width changes with the clock format or the day, and decides whether it fits.
-    const timeElement = card.querySelector("[data-pinned-prompt-time]");
     if (timeElement) observer.observe(timeElement);
     return () => observer.disconnect();
   };
@@ -391,19 +404,15 @@ export function FloatingPrompt({
   const expanded = message !== undefined && expandedRowId === pinned?.rowId;
   const look = message ? resolvePinnedPromptLook(message) : undefined;
   const toggleExpanded = () => setExpandedRowId(expanded ? null : (pinned?.rowId ?? null));
-  const jump = (target: ChatMessage) => {
+  const jump = () => {
     if (prompt) onSelect(prompt.rowIndex);
-    else onSelectLeading(target);
+    else if (message) onSelectLeading(message);
   };
 
   const resync = (element: HTMLSpanElement | null) => {
     if (element) onResync();
   };
-  const forwardWheel = (card: HTMLDivElement | null) => {
-    if (!card || expanded) return;
-    card.addEventListener("wheel", onWheel, { passive: false });
-    return () => card.removeEventListener("wheel", onWheel);
-  };
+  const forwardWheel = wheelForwarder(expanded ? undefined : onWheel);
   const widthStyle = pinned?.width ? { width: pinned.width } : undefined;
   const widthClassName = pinned?.width ? "max-w-full" : "max-w-[80%]";
 
@@ -429,7 +438,7 @@ export function FloatingPrompt({
                 style={widthStyle}
                 className={widthClassName}
                 onToggleExpanded={toggleExpanded}
-                onJump={() => jump(message)}
+                onJump={jump}
                 onMeasured={onResync}
                 onWheel={onWheel}
               />
@@ -459,7 +468,7 @@ export function FloatingPrompt({
                     onPointerDown={(event) => event.preventDefault()}
                     onClick={(event) => {
                       event.currentTarget.blur();
-                      jump(message);
+                      jump();
                     }}
                     className="flex w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-2xl p-3 text-start text-muted-foreground hover:brightness-95 focus-visible:outline-2 focus-visible:outline-ring dark:hover:brightness-110"
                   >
@@ -491,11 +500,6 @@ export function LeadingPromptPreview({
   const [expanded, setExpanded] = useState(false);
   const look = resolvePinnedPromptLook(message);
   if (look.kind !== "bubble" || look.attachmentsOnly) return null;
-  const clampToTarget = (card: HTMLElement) => {
-    sizePromptCard(card, { covered: 0, cap: Infinity, lift: false });
-    // It sits in the timeline, not over it.
-    card.dataset.floating = "false";
-  };
   return (
     <div className="messages-timeline-row-frame pb-4">
       <div className="chat-content-lane flex justify-end">
@@ -507,7 +511,7 @@ export function LeadingPromptPreview({
           className="max-w-[80%]"
           onToggleExpanded={() => setExpanded((value) => !value)}
           onJump={() => onSelect(message)}
-          onMeasured={clampToTarget}
+          onMeasured={(card) => sizePromptCard(card, { covered: 0, cap: Infinity, lift: false })}
         />
       </div>
     </div>

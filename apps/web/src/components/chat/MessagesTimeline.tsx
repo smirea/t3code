@@ -436,7 +436,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   );
   const restoringThreadPosition = positionedThreadKey !== listIdentityKey;
   const prefersReducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
-  const desktopViewport = useMediaQuery("(min-width: 768px) and (pointer: fine)");
+  const desktopViewport = useMediaQuery({ min: "md", pointer: "fine" });
   const stickyPromptsEnabled = useClientSettings((settings) => settings.stickyPromptsEnabled);
   const floatingPromptSupported = desktopViewport && stickyPromptsEnabled;
   const [settlingListIdentity, setSettlingListIdentity] = useState<string | null>(listIdentityKey);
@@ -855,6 +855,16 @@ const ConversationTimeline = memo(function ConversationTimeline({
   const bannerLaneRef = useRef<Element | null>(null);
   // A clicked leading prompt is loaded first; the sync that sees its row lands on it.
   const leadingJumpRef = useRef<string | null>(null);
+  // Each prompt's last painted width, for when its row is out of the painted range.
+  const promptWidthsRef = useRef(new Map<string, number>());
+  const scrollToRow = (rowIndex: number, viewOffset = 24) => {
+    navigateTimeline();
+    void listRef.current?.scrollToIndex({
+      index: rowIndex,
+      animated: !window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+      viewOffset,
+    });
+  };
   const loadAndJumpToLeadingPrompt = (message: ChatMessage) => {
     if (!historyControls) return;
     leadingJumpRef.current = message.id;
@@ -864,37 +874,28 @@ const ConversationTimeline = memo(function ConversationTimeline({
   const syncFloatingPrompt = () => {
     restingScrollRef.current = null;
     const zone = floatingPromptZoneRef.current;
+    if (!zone) return;
     const state = listRef.current?.getState?.();
     const viewport = listRef.current?.getScrollableNode();
-    if (!zone || !state || !viewport || state.data !== rows) return;
+    if (!state || !viewport || state.data !== rows) return;
     // The sticky line is the timeline's top edge, or the bottom of a banner over it, so the part
     // of a stuck row above the line is already clipped or covered and the row never hides.
     const viewportTop = viewport.getBoundingClientRect().top;
+    const { scrollTop, clientHeight } = viewport;
     const banner = bannerLaneRef.current?.getBoundingClientRect();
     const lineInset = banner && banner.height > 0 ? Math.max(0, banner.bottom - viewportTop) : 0;
-    const zoneTop = `${lineInset}px`;
-    writeStyle(zone, "top", zoneTop);
+    writeStyle(zone, "top", `${lineInset}px`);
     const line = viewportTop + lineInset;
-    const leadingJumpIndex =
-      leadingJumpRef.current === null
-        ? -1
-        : rows.findIndex((row) => row.id === leadingJumpRef.current);
-    if (
-      leadingJumpIndex < 0 &&
-      leadingJumpRef.current !== null &&
-      (historyControls?.error != null || leadingPrompt?.id !== leadingJumpRef.current)
-    ) {
-      // The load failed, or landed without the row; a later load must not jump unasked.
-      leadingJumpRef.current = null;
-    }
-    if (leadingJumpIndex >= 0) {
-      leadingJumpRef.current = null;
-      navigateTimeline();
-      void listRef.current?.scrollToIndex({
-        index: leadingJumpIndex,
-        animated: !window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-        viewOffset: lineInset + 24,
-      });
+    const jumpId = leadingJumpRef.current;
+    if (jumpId !== null) {
+      const jumpIndex = rows.findIndex((row) => row.id === jumpId);
+      if (jumpIndex >= 0) {
+        leadingJumpRef.current = null;
+        scrollToRow(jumpIndex, lineInset + 24);
+      } else if (historyControls?.error != null || leadingPrompt?.id !== jumpId) {
+        // The load failed, or landed without the row; a later load must not jump unasked.
+        leadingJumpRef.current = null;
+      }
     }
     // Painted rows only: LegendList moves its row indices before it redraws recycled containers,
     // so a container fetched by index must still be showing that row to count.
@@ -938,10 +939,11 @@ const ConversationTimeline = memo(function ConversationTimeline({
     }
     // Rows above the first loaded prompt belong to the turn of the prompt history has not loaded,
     // which the list header shows until it scrolls past the line.
-    const leadingAnchor =
+    const leadingElement =
       leadingPrompt === null
-        ? undefined
-        : viewport.querySelector("[data-leading-prompt-anchor]")?.getBoundingClientRect();
+        ? null
+        : viewport.querySelector<HTMLElement>("[data-leading-prompt-anchor]");
+    const leadingAnchor = leadingElement?.getBoundingClientRect();
     const stuckId =
       minimapItems[index]?.id ??
       (leadingPrompt !== null &&
@@ -959,23 +961,18 @@ const ConversationTimeline = memo(function ConversationTimeline({
       pinnedHeightRef.current = 0;
       return;
     }
-    const anchorWidth = index >= 0 ? anchorRect(index)?.width : leadingAnchor?.width;
-    const previous = stickyPrompt.get();
-    stickyPrompt.set({
-      rowId: stuckId,
-      width: anchorWidth ?? (previous?.rowId === stuckId ? previous.width : null),
-    });
+    const stuckAnchor = index >= 0 ? anchorElement(index) : (leadingElement ?? undefined);
+    // Every timeline read comes before the card's writes, so a frame lays out once.
+    const stuckRect = index >= 0 ? stuckAnchor?.getBoundingClientRect() : leadingAnchor;
+    // The leading sentinel stands for whichever prompt history opens inside.
+    const widthKey = index >= 0 ? stuckId : `leading:${leadingPrompt?.id}`;
+    if (stuckRect) promptWidthsRef.current.set(widthKey, stuckRect.width);
+    stickyPrompt.set({ rowId: stuckId, width: promptWidthsRef.current.get(widthKey) ?? null });
     const layer = zone.querySelector<HTMLElement>("[data-pinned-prompt-layer]");
     if (!layer) return;
     const expanded = zone.dataset.expanded === "true";
     const card = layer.querySelector<HTMLElement>("[data-pinned-prompt-card]");
-    const stuckAnchor =
-      index >= 0
-        ? anchorElement(index)
-        : viewport.querySelector<HTMLElement>("[data-leading-prompt-anchor]");
     const collapsedBody = stuckAnchor?.querySelector('[data-user-message-collapsed="true"]');
-    // Every timeline read comes before the card's writes, so a frame lays out once.
-    const stuckRect = stuckAnchor?.getBoundingClientRect();
     const cap = collapsedBody ? collapsedBody.getBoundingClientRect().height : Infinity;
     const nextAnchorTop = anchorRect(index + 1)?.top;
     const nextTop = (nextAnchorTop ?? Infinity) - line;
@@ -987,10 +984,8 @@ const ConversationTimeline = memo(function ConversationTimeline({
     const pinnedHeight = cardHeight ?? layer.offsetHeight;
     pinnedHeightRef.current = pinnedHeight;
     const offset = expanded ? 0 : Math.min(0, nextTop - STICKY_PROMPT_GAP_PX - pinnedHeight);
-    const translate = `0 ${offset}px`;
-    writeStyle(layer, "translate", translate);
-    const clipPath = offset < 0 ? `inset(${-offset}px -40px -40px -40px)` : "";
-    writeStyle(layer, "clipPath", clipPath);
+    writeStyle(layer, "translate", `0 ${offset}px`);
+    writeStyle(layer, "clipPath", offset < 0 ? `inset(${-offset}px -40px -40px -40px)` : "");
     // A copy on its way out is mostly clipped; keep it out of the tab order.
     const inert = offset < 0;
     if (layer.inert !== inert) layer.inert = inert;
@@ -1004,13 +999,12 @@ const ConversationTimeline = memo(function ConversationTimeline({
     if (nextAnchorTop === undefined && minimapRowIndices[index + 1] !== undefined) {
       // LegendList paints a prompt before it scrolls into view, but can paint it in a container
       // it has not reindexed yet, so any painted prompt below counts.
-      nextReach = viewportTop + viewport.clientHeight - line;
+      nextReach = viewportTop + clientHeight - line;
       for (const anchor of viewport.querySelectorAll("[data-sticky-prompt-anchor]")) {
         const top = anchor.getBoundingClientRect().top;
         if (top > (stuckRect?.bottom ?? line)) nextReach = Math.min(nextReach, top - line);
       }
     }
-    const scrollTop = viewport.scrollTop;
     restingScrollRef.current = {
       data: rows,
       min: scrollTop - (coverable - covered),
@@ -1049,7 +1043,14 @@ const ConversationTimeline = memo(function ConversationTimeline({
     };
   });
   // Size changes reach the pinned copy through the next frame; scrolls sync directly.
-  const floatingPromptSizeChangedRef = useRef(false);
+  const floatingPromptFrameRef = useRef<number | null>(null);
+  const scheduleFloatingPromptSync = () => {
+    if (floatingPromptFrameRef.current !== null) return;
+    floatingPromptFrameRef.current = requestAnimationFrame(() => {
+      floatingPromptFrameRef.current = null;
+      syncFloatingPrompt();
+    });
+  };
 
   const refreshMinimap = useStableCallback(() => {
     const state = listRef.current?.getState?.();
@@ -1093,10 +1094,6 @@ const ConversationTimeline = memo(function ConversationTimeline({
     setMinimapCurrentIndex((current) =>
       current === nextCurrentIndex ? current : nextCurrentIndex,
     );
-    if (floatingPromptSizeChangedRef.current) {
-      floatingPromptSizeChangedRef.current = false;
-      syncFloatingPrompt();
-    }
   });
 
   const minimapRefreshFrameRef = useRef<number | null>(null);
@@ -1154,15 +1151,17 @@ const ConversationTimeline = memo(function ConversationTimeline({
   };
 
   const handleScroll = () => {
-    const resting = restingScrollRef.current;
-    const scrollTop = listRef.current?.getScrollableNode()?.scrollTop;
-    if (
-      resting?.data !== rows ||
-      scrollTop === undefined ||
-      scrollTop <= resting.min ||
-      scrollTop >= resting.max
-    ) {
-      syncFloatingPrompt();
+    if (floatingPromptZoneRef.current) {
+      const resting = restingScrollRef.current;
+      const scrollTop = listRef.current?.getScrollableNode()?.scrollTop;
+      if (
+        resting?.data !== rows ||
+        scrollTop === undefined ||
+        scrollTop <= resting.min ||
+        scrollTop >= resting.max
+      ) {
+        syncFloatingPrompt();
+      }
     }
     if (restoringThreadPosition || listRef.current?.getState?.().data !== rows) return;
     const isAtEnd = rememberPosition(liveFollowEnabled && !anchoredEndSpace);
@@ -1176,8 +1175,8 @@ const ConversationTimeline = memo(function ConversationTimeline({
     if (disclosureAnchorKeyRef.current !== null) {
       scheduleDisclosureSettle();
     }
-    floatingPromptSizeChangedRef.current = true;
     restingScrollRef.current = null;
+    if (floatingPromptZoneRef.current) scheduleFloatingPromptSync();
     scheduleMinimapRefresh();
   };
 
@@ -1400,6 +1399,10 @@ const ConversationTimeline = memo(function ConversationTimeline({
         cancelAnimationFrame(minimapRefreshFrameRef.current);
         minimapRefreshFrameRef.current = null;
       }
+      if (floatingPromptFrameRef.current !== null) {
+        cancelAnimationFrame(floatingPromptFrameRef.current);
+        floatingPromptFrameRef.current = null;
+      }
       listRef.current = null;
       registerTimeline?.(null);
     };
@@ -1498,14 +1501,6 @@ const ConversationTimeline = memo(function ConversationTimeline({
     </TimelineListFooter>
   );
 
-  const scrollToRow = (rowIndex: number, viewOffset = 24) => {
-    navigateTimeline();
-    void listRef.current?.scrollToIndex({
-      index: rowIndex,
-      animated: !window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-      viewOffset,
-    });
-  };
   // Lands the prompt below a banner as well, where the sticky line sits.
   const jumpToPinnedPrompt = (rowIndex: number) => {
     const zone = floatingPromptZoneRef.current;

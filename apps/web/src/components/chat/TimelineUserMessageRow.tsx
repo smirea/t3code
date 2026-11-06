@@ -76,7 +76,7 @@ import { chatMarkdownClipboardPayload } from "../../markdown-clipboard";
 import type { ChatMarkdownContextReference } from "../ChatMarkdown";
 import { cn } from "~/lib/utils";
 import { markdownProseDirection } from "~/textDirection";
-import { markdownPreviewText } from "./timelineMinimapItems";
+import { compactMinimapPreview, markdownPreviewText } from "./timelineMinimapItems";
 import { useMediaQuery } from "~/hooks/useMediaQuery";
 import { formatChatTimestampTooltip, formatDayAwareTimestamp } from "../../timestampFormat";
 import { WorkflowOpeningBlock } from "./WorkflowOpeningBlock";
@@ -1212,12 +1212,11 @@ export function resolvePinnedPromptLook(message: UserPromptMessage): PinnedPromp
   const presentation = resolveUserMessagePresentation(message);
   const text = resolveUserPromptText(message);
   const firstLine = text.trim().split(/\r?\n/, 1)[0] ?? "";
-  const plain = markdownPreviewText(
-    replaceComposerContextReferences(text, (reference) => reference.label),
-  )
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 200);
+  const plain = (
+    compactMinimapPreview(
+      markdownPreviewText(replaceComposerContextReferences(text, (reference) => reference.label)),
+    ) ?? ""
+  ).slice(0, 200);
   const attachmentNames = (message.attachments ?? []).map((attachment) => attachment.name);
   const look: PinnedPromptLook =
     presentation.attribution === "automation"
@@ -1293,7 +1292,7 @@ export function UserPromptMarkdown({
   const cut = newline > PROMPT_PREVIEW_CHARS / 2 ? newline : -1;
   return (
     <UserMessageBody
-      text={cut > 0 ? text.slice(0, cut) : preview ? text.slice(0, PROMPT_PREVIEW_CHARS) : text}
+      text={preview ? text.slice(0, cut > 0 ? cut : PROMPT_PREVIEW_CHARS) : text}
       skills={ctx.skills}
       markdownCwd={ctx.markdownCwd}
     />
