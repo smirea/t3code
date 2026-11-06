@@ -49,6 +49,12 @@ const FLOATING_PADDING_PX = 8;
 /** The least space between a whole prompt's last line and the time beside it. */
 const STAMP_GAP_PX = 8;
 
+/** How far a whole prompt scrolls under the line while it makes room for its time. */
+const SETTLE_PX = 20;
+
+/** A timeline bubble's widest, as a share of its lane (`max-w-[80%]`). */
+const BUBBLE_MAX_WIDTH_RATIO = 0.8;
+
 /**
  * Where to cut a block to its first two rendered lines (null when it has two or fewer), how far
  * its first line sits below its top, as a leading quote or heading margin does, and how far the cut
@@ -61,6 +67,7 @@ function twoLineCut(element: HTMLElement): {
   trailing: number;
   lastLine: number;
   ends: { left: number; right: number } | null;
+  count: number;
 } {
   const lines: Array<{ top: number; bottom: number; left: number; right: number }> = [];
   const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
@@ -85,6 +92,7 @@ function twoLineCut(element: HTMLElement): {
     trailing: lines.length < 3 ? 0 : Math.max(0, (lines[2]!.top - lines[1]!.bottom) / 2),
     lastLine: lines.length < 3 ? 0 : lines[1]!.bottom - lines[1]!.top,
     ends: lines[Math.min(lines.length, 2) - 1] ?? null,
+    count: lines.length,
   };
 }
 
@@ -117,9 +125,10 @@ export function sizePromptCard(
   const maxLift = lift ? liftable : 0;
   const maxSink = lift ? sinkable : 0;
   const stamp = lift ? Number(card.dataset.stamp) : 0;
+  const widen = lift ? Number(card.dataset.widen) : 0;
   const base = Number(card.dataset.target) + liftable - maxLift + sinkable - maxSink;
-  const grown = Math.min(stamp, Math.max(0, base - covered));
-  const height = Math.max(base + grown, covered);
+  const settled = stamp > 0 || widen > 0 ? Math.min(1, Math.max(0, base - covered) / SETTLE_PX) : 0;
+  const height = Math.max(base + stamp * settled, covered);
   const wanted = Math.min(cap, content);
   const room = height - padding;
   const sunk = Math.min(maxSink, Math.max(0, wanted - room));
@@ -132,15 +141,16 @@ export function sizePromptCard(
   const bodyTranslate = lifted > 0 ? `0 ${-lifted}px` : "";
   writeStyle(body, "translate", bodyTranslate);
   // The button stays over the last line while the bottom edge closes in under it, and a time
-  // growing its own line settles into it.
+  // settles into the room a whole prompt makes for it.
   const toggle = card.querySelector<HTMLElement>("[data-pinned-prompt-toggle]");
-  const progress = sunk > 0 ? sunk / sinkable : grown > 0 ? grown / stamp : 0;
+  const progress = sunk > 0 ? sunk / sinkable : settled;
   const dropped = progress * Number(card.dataset.drop);
   if (toggle) {
     writeStyle(toggle, "translate", dropped !== 0 ? `0 ${dropped}px` : "");
-    writeStyle(toggle, "opacity", grown > 0 && grown < stamp ? String(progress) : "");
+    writeStyle(toggle, "opacity", settled > 0 && settled < 1 ? String(settled) : "");
   }
-  writeStyle(card, "minWidth", grown > 0 ? `${card.dataset.stampWidth}px` : "");
+  const minWidth = settled > 0 && widen > 0 ? Number(card.dataset.width) + widen * settled : 0;
+  writeStyle(card, "minWidth", minWidth > 0 ? `${minWidth}px` : "");
   const truncated = content > shown + 0.5 ? "true" : "false";
   if (card.dataset.truncated !== truncated) card.dataset.truncated = truncated;
   const floating = height > covered + 0.5 ? "true" : "false";
@@ -191,7 +201,7 @@ function PromptCard({
       const cardStyle = getComputedStyle(card);
       const padding = parseFloat(cardStyle.paddingTop) + parseFloat(cardStyle.paddingBottom);
       const height = content.offsetHeight;
-      const { cut, leading, trailing, lastLine, ends } = twoLineCut(content);
+      const { cut, leading, trailing, lastLine, ends, count } = twoLineCut(content);
       // Only a clipped copy trims its padding; a short one keeps the row's.
       const lift =
         cut === null
@@ -203,20 +213,29 @@ function PromptCard({
       const toggleHeight =
         card.querySelector<HTMLElement>("[data-pinned-prompt-toggle]")?.offsetHeight ?? 0;
       const timeElement = card.querySelector<HTMLElement>("[data-pinned-prompt-time]");
+      // A whole prompt keeps the time at the end of its last line: a single line widens the card
+      // for it, since that cannot rewrap; past the widest bubble it takes a line of its own.
       let stamp = 0;
+      let widen = 0;
       if (cut === null && timeElement && ends) {
-        const cardRect = card.getBoundingClientRect();
-        const inset = parseFloat(cardStyle.paddingInlineEnd) + timeElement.offsetWidth;
-        const room =
+        const contentRect = content.getBoundingClientRect();
+        const lineEnd =
           cardStyle.direction === "rtl"
-            ? ends.left - (cardRect.left + inset)
-            : cardRect.right - inset - ends.right;
-        if (room < STAMP_GAP_PX) stamp = toggleHeight - bottomTrim;
-        card.dataset.stampWidth = String(
+            ? contentRect.right - ends.left
+            : ends.right - contentRect.left;
+        const needed =
+          parseFloat(cardStyle.paddingInlineStart) +
+          lineEnd +
+          STAMP_GAP_PX +
           timeElement.offsetWidth +
-            parseFloat(cardStyle.paddingInlineStart) +
-            parseFloat(cardStyle.paddingInlineEnd),
-        );
+          parseFloat(cardStyle.paddingInlineEnd);
+        const width = parseFloat(card.style.width) || card.offsetWidth;
+        const widest = (card.parentElement?.clientWidth ?? width) * BUBBLE_MAX_WIDTH_RATIO;
+        if (needed > width) {
+          if (count === 1 && needed <= widest) widen = needed - width;
+          else stamp = toggleHeight - bottomTrim;
+        }
+        card.dataset.width = String(width);
       }
       const drop =
         cut === null ? (stamp > 0 ? bottomTrim : 0) : bottomTrim + (toggleHeight - lastLine) / 2;
@@ -226,6 +245,8 @@ function PromptCard({
       card.dataset.sink = String(sink);
       card.dataset.drop = String(drop);
       card.dataset.stamp = String(stamp);
+      card.dataset.widen = String(widen);
+      card.dataset.settle = String(stamp > 0 || widen > 0 ? SETTLE_PX : 0);
       card.dataset.target = String(padding + (cut ?? height) - lift - sink);
       onMeasured(card);
     });

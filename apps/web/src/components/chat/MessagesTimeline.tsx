@@ -996,9 +996,9 @@ const ConversationTimeline = memo(function ConversationTimeline({
     if (layer.inert !== inert) layer.inert = inert;
     if (expanded || offset < 0 || leadingJumpRef.current !== null) return;
     // Past this the copy grows over its row, or the row's top drops below the line and hands off.
-    // A copy growing a line for its time is still only once that line is in, `stamp` past the row.
-    const stamp = Number(card?.dataset.stamp) || 0;
-    const coverable = Math.min(pinnedHeight - 2 * stamp, stuckRect?.height ?? pinnedHeight) - 1;
+    // A whole copy making room for its time is still only once its row is `settle` under the line.
+    const settle = Number(card?.dataset.settle) || 0;
+    const coverable = Math.min(pinnedHeight, (stuckRect?.height ?? pinnedHeight) - settle) - 1;
     if (covered > coverable) return;
     let nextReach = nextTop;
     if (nextAnchorTop === undefined && minimapRowIndices[index + 1] !== undefined) {
